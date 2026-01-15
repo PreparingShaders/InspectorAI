@@ -23,8 +23,6 @@ client = genai.Client(
         base_url="https://inspectorgpt.classname1984.workers.dev"
     )
 )
-#Gemma 3 27B Instruct' #'Gemini 3 Pro' #'gemini-2.0-flash-lite' #'gemini-2.0-flash' #'gemini-2.5-pro' #
-MODEL_NAME = "gemini-2.5-flash-lite"
 
 SYSTEM_PROMPT = '''
 Ты — Андрей Генадьевич Бубен, ИИ-помощник для анализа и комментариев в чате. 
@@ -36,12 +34,10 @@ SYSTEM_PROMPT = '''
 Текущая дата — январь 2026 года. Отвечай только на русском языке.
 '''
 
-
 chat_histories = defaultdict(list)
 authorized_users = set()
 
 AUTH_QUESTION = "Тут у нас пароль. Нужно отгадать загадку. Скажи, за какое время разгоняется нива до 100 км/ч"
-
 
 # ─── Вспомогательная функция для упоминания бота ───
 def is_bot_mentioned(message, bot_username: str) -> bool:
@@ -56,57 +52,71 @@ def is_bot_mentioned(message, bot_username: str) -> bool:
     return False
 
 
-# ─── Общая функция вызова LLM ───
+# Используем полные имена из твоего списка
+MODELS_PRIORITY = [
+    'models/gemini-2.5-flash-lite',  # Приоритет №1 (Лимит 1000)
+    'models/gemini-2.0-flash-lite',
+    'models/gemini-2.5-flash',
+    'models/gemini-3-flash-preview',
+    'models/gemini-1.5-flash-lite-latest'
+]
+
+
 async def process_llm(update: Update, final_query: str):
     if not final_query or not final_query.strip():
         return
 
-    try:
-        chat_id = update.effective_chat.id
-    except AttributeError:
-        return  # нет чата → игнорируем
-
+    chat_id = update.effective_chat.id
     history = chat_histories.get(chat_id, [])
 
-    # добавляем сообщение пользователя
+    # Добавляем сообщение пользователя в локальную историю
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
     chat_histories[chat_id] = history[-14:]
 
     reply_text = "…я задумался, попробуй иначе"
+    success = False  # Флаг успешного ответа
 
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[Content(role="model", parts=[types.Part(text=SYSTEM_PROMPT)])] + history,
-            config=GenerateContentConfig(
-                temperature=0.75,
-                max_output_tokens=1200,
-                top_p=0.92
+    for current_model in MODELS_PRIORITY:
+        try:
+            print(f"📡 Запрос к модели: {current_model}")
+
+            response = client.models.generate_content(
+                model=current_model,
+                contents=[Content(role="model", parts=[types.Part(text=SYSTEM_PROMPT)])] + history,
+                config=GenerateContentConfig(
+                    temperature=0.75,
+                    max_output_tokens=512,
+                    top_p=0.92
+                )
             )
-        )
 
-        # безопасный доступ к тексту
-        reply_text = getattr(response, "text", None)
-        if not reply_text:
-            reply_text = "…я задумался, попробуй иначе"
-        else:
-            reply_text = reply_text.strip()
+            if response and response.text:
+                reply_text = response.text.strip()
+                # Сохраняем ответ модели в историю
+                chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
+                success = True
+                break  # ВАЖНО: Выходим из цикла, как только получили текст
 
-        # сохраняем ответ модели
-        chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
+        except Exception as e:
+            err_msg = str(e)
+            # Если лимиты (429) или модель не найдена/недоступна через прокси (404/503)
+            if any(code in err_msg for code in ["429", "404", "503"]):
+                print(f"⚠️ Модель {current_model} вернула ошибку {err_msg[:3]}. Пробую следующую...")
+                continue
+            else:
+                # Если ошибка критическая (например, неверный ключ), прекращаем
+                reply_text = f"💥 Ошибка API: {err_msg[:150]}"
+                break
 
-    except Exception as e:
-        # более информативный вывод в группе
-        reply_text = f"💥 Gemini API ошибка: {type(e).__name__}\n{str(e)[:300]}"
+    if not success and "я задумался" in reply_text:
+        reply_text = "🤖 Все доступные модели Gemini сейчас перегружены лимитами. Попробуй позже."
 
-    # безопасный ответ в Telegram
+    # --- ОТПРАВКА В TELEGRAM (ТОЛЬКО ОДИН РАЗ) ---
     if update.message:
         try:
             await update.message.reply_text(reply_text[:4096])
         except Exception as e:
-            print("Ошибка при отправке в Telegram:", e)
-
-
+            print(f"Ошибка отправки сообщения: {e}")
 # ─── Обработка /start в личке ───
 async def start(update: Update, context) -> None:
     user_id = update.effective_user.id
