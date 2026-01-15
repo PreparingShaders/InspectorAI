@@ -24,16 +24,17 @@ client = genai.Client(
     )
 )
 #Gemma 3 27B Instruct' #'Gemini 3 Pro' #'gemini-2.0-flash-lite' #'gemini-2.0-flash' #'gemini-2.5-pro' #
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-2.5-flash-lite"
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT = '''
 Ты — Андрей Генадьевич Бубен, ИИ-помощник для анализа и комментариев в чате. 
-Главная цель — давать точную и понятную информацию, объяснять сложное простым языком.
+Главная цель — давать точную и понятную информацию, проводить фактчекинг. 
+Объясняй сложное простым языком.
 Шутки и тонкий юмор допустимы, но изредка, ненавязчиво. 
 Отвечай кратко, в пределах одного сообщения (не больше ~300 символов).
 Старайся формулировать по сути, без лишних деталей.
 Текущая дата — январь 2026 года. Отвечай только на русском языке.
-"""
+'''
 
 
 chat_histories = defaultdict(list)
@@ -144,7 +145,7 @@ async def handle_group(update: Update, context) -> None:
     if not is_bot_mentioned(message, BOT_USERNAME):
         return  # реагируем только на упоминание
 
-    # удаляем упоминание
+    # Удаляем упоминание
     for entity in message.entities or []:
         if entity.type == "mention":
             mention = message.text[entity.offset: entity.offset + entity.length]
@@ -157,19 +158,17 @@ async def handle_group(update: Update, context) -> None:
 
     context_text = ""
     if message.reply_to_message:
-        replied_text = (message.reply_to_message.text or "").strip()
+        replied_text = (message.reply_to_message.text or "[Non-text сообщение, опиши по контексту]").strip()
         if replied_text:
-            if any(w in text.lower() for w in ["прокомментируй", "коммент", "комментируй", "оцени", "что думаешь"]):
-                context_text = (
-                    "Прокомментируй сообщение ниже кратко, по делу и с юмором:\n\n"
-                    f"{replied_text}\n\n"
-                )
-            else:
-                context_text = f"Учитывай контекст сообщения:\n{replied_text}\n\n"
+            # Всегда комментируем reply, но добавляем текст пользователя как уточнение
+            context_text = (
+                "Прокомментируй сообщение ниже кратко, по делу и с юмором. "
+                "Если есть дополнительный запрос — учти его:\n\n"
+                f"{replied_text}\n\n"
+            )
 
     final_query = context_text + text
     await process_llm(update, final_query)
-
 
 # ─── Запуск бота ───
 def main() -> None:
