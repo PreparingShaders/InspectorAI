@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
+from openai import OpenAI
 from google import genai
 from google.genai import types
 from google.genai.types import GenerateContentConfig, Content
@@ -15,6 +16,7 @@ InspectorGPT = os.getenv('InspectorGPT')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 BOT_USERNAME = os.getenv('BOT_USERNAME').lstrip("@").lower()  # без @
 CORRECT_PASSWORD = os.getenv('Password')
+OPEN_ROUTER_API_KEY = os.getenv('OPEN_ROUTER_API_KEY')
 
 # ─── Инициализация клиента с прокси через Cloudflare Worker ───
 client = genai.Client(
@@ -25,13 +27,11 @@ client = genai.Client(
 )
 
 SYSTEM_PROMPT = '''
-Ты — Андрей Генадьевич Бубен, ИИ-помощник для анализа и комментариев в чате. 
-Главная цель — давать точную и понятную информацию, проводить фактчекинг. 
-Объясняй сложное простым языком.
-Шутки и тонкий юмор допустимы, но изредка, ненавязчиво. 
-Отвечай кратко, в пределах одного сообщения (не больше ~300 символов).
-Старайся формулировать по сути, без лишних деталей.
-Текущая дата — январь 2026 года. Отвечай только на русском языке.
+Ты — ИИ помощник.  
+Точная, понятная информация + фактчекинг.  
+Простой язык. Кратко (≤300 зн).  
+Редкий тонкий юмор ок.  
+Только русский. Январь 2026.
 '''
 
 chat_histories = defaultdict(list)
@@ -69,16 +69,17 @@ async def process_llm(update: Update, final_query: str):
     chat_id = update.effective_chat.id
     history = chat_histories.get(chat_id, [])
 
-    # Добавляем сообщение пользователя в локальную историю
+    # Добавляем сообщение пользователя
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
-    chat_histories[chat_id] = history[-14:]
+    chat_histories[chat_id] = history[-6:]  # оставляем последние 14
 
     reply_text = "…я задумался, попробуй иначе"
-    success = False  # Флаг успешного ответа
+    used_provider = None  # Будем хранить, кто ответил: "gemini" или "openrouter"
 
+    # ─── Попытка через Gemini ───
     for current_model in MODELS_PRIORITY:
         try:
-            print(f"📡 Запрос к модели: {current_model}")
+            print(f"Запрос к Gemini: {current_model}")
 
             response = client.models.generate_content(
                 model=current_model,
@@ -92,31 +93,64 @@ async def process_llm(update: Update, final_query: str):
 
             if response and response.text:
                 reply_text = response.text.strip()
-                # Сохраняем ответ модели в историю
                 chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
-                success = True
-                break  # ВАЖНО: Выходим из цикла, как только получили текст
-
-        except Exception as e:
-            err_msg = str(e)
-            # Если лимиты (429) или модель не найдена/недоступна через прокси (404/503)
-            if any(code in err_msg for code in ["429", "404", "503"]):
-                print(f"⚠️ Модель {current_model} вернула ошибку {err_msg[:3]}. Пробую следующую...")
-                continue
-            else:
-                # Если ошибка критическая (например, неверный ключ), прекращаем
-                reply_text = f"💥 Ошибка API: {err_msg[:150]}"
+                used_provider = "Gemini"
                 break
 
-    if not success and "я задумался" in reply_text:
-        reply_text = "🤖 Все доступные модели Gemini сейчас перегружены лимитами. Попробуй позже."
+        except Exception as e:
+            err_str = str(e).lower()
+            print(f"Gemini {current_model} → ошибка: {err_str[:100]}...")
+            if any(x in err_str for x in ["429", "quota", "rate limit", "503", "unavailable", "404"]):
+                continue
+            else:
+                break
 
-    # --- ОТПРАВКА В TELEGRAM (ТОЛЬКО ОДИН РАЗ) ---
+    # ─── Fallback на OpenRouter ───
+    if used_provider is None:
+        print("Gemini недоступен → пробуем OpenRouter")
+        try:
+            or_client = OpenAI(
+                api_key=OPEN_ROUTER_API_KEY,
+                base_url="https://openrouter.ai/api/v1",
+            )
+
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            for msg in history:
+                role = "user" if msg.role == "user" else "assistant"
+                messages.append({"role": role, "content": msg.parts[0].text})
+
+            response = or_client.chat.completions.create(
+                model="nousresearch/hermes-3-llama-3.1-405b:free",
+                messages=messages,
+                temperature=0.75,
+                max_tokens=512,
+                top_p=0.92,
+            )
+
+            if response.choices and response.choices[0].message.content:
+                reply_text = response.choices[0].message.content.strip()
+                chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
+                used_provider = "OR"
+
+        except Exception as or_error:
+            print(f"OpenRouter ошибка: {str(or_error)[:150]}")
+            reply_text = "Сейчас оба ИИ недоступны. Попробуй через 5–10 минут."
+
+    # ─── Добавляем маркер источника ───
+    if used_provider == "Gemini":
+        final_reply = f"(Gemini) {reply_text}"
+    elif used_provider == "OR":
+        final_reply = f"(OR) {reply_text}"
+    else:
+        final_reply = reply_text  # сообщение об ошибке без префикса
+
+    # ─── Отправка ───
     if update.message:
         try:
-            await update.message.reply_text(reply_text[:4096])
+            await update.message.reply_text(final_reply[:4096])
         except Exception as e:
-            print(f"Ошибка отправки сообщения: {e}")
+            print(f"Ошибка отправки: {e}")
+
 # ─── Обработка /start в личке ───
 async def start(update: Update, context) -> None:
     user_id = update.effective_user.id
