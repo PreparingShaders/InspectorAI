@@ -1,5 +1,4 @@
-import os
-import asyncio
+import os, asyncio, re
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
@@ -71,6 +70,24 @@ def is_bot_mentioned(message, bot_username: str) -> bool:
                 return True
     return False
 
+
+def format_to_html(text: str) -> str:
+    """Универсальная конвертация Markdown в HTML для всех провайдеров"""
+    # 1. Сначала экранируем HTML-символы, которые могут быть в коде (чтобы не сломать парсинг)
+    # Но если мы ожидаем, что модель УЖЕ может прислать HTML, этот шаг можно пропустить.
+    # Для безопасности оставим только базовую замену:
+
+    # 2. Конвертируем основные элементы Markdown в HTML
+    # Жирный (Markdown: **текст** или __текст__)
+    text = re.sub(r'(\*\*|__)(.*?)\1', r'<b>\2</b>', text)
+    # Курсив (Markdown: *текст* или _текст_)
+    text = re.sub(r'(\*|_)(.*?)\1', r'<i>\2</i>', text)
+    # Моноширинный код (Markdown: `текст`)
+    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
+    # Блоки кода (Markdown: ```текст```)
+    text = re.sub(r'```(?:.*?)\n?(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
+
+    return text
 
 async def process_llm(update: Update, context, final_query: str):
     if not final_query or not final_query.strip():
@@ -159,12 +176,15 @@ async def process_llm(update: Update, context, final_query: str):
         await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text="❌ Модели недоступны.")
         return
 
-    # Сохраняем в историю
+    # 1. Сохраняем в историю ОРИГИНАЛЬНЫЙ текст (без тегов)
     chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
 
-    # Формируем заголовок с HTML
+    # 2. Прогоняем текст через твою новую функцию форматирования
+    formatted_text = format_to_html(reply_text)
+
+    # 3. Формируем заголовок и итоговую строку
     model_short = last_used_model.split('/')[-1]
-    full_reply = f"<b>{used_provider}: {model_short}</b>\n\n{reply_text}"
+    full_reply = f"<b>{used_provider}: {model_short}</b>\n\n{formatted_text}"
 
     # Telegram limit ~4096
     MAX_LEN = 4000
@@ -178,9 +198,10 @@ async def process_llm(update: Update, context, final_query: str):
                 parse_mode='HTML',
                 disable_web_page_preview=True
             )
-        except Exception as e:
-            # Если HTML сломался (например, ИИ забыл закрыть тег </b>), шлем чистым текстом
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=full_reply,
+        except Exception:
+            # Если HTML всё же сломался, шлем без него (используем оригинальный reply_text)
+            fallback_reply = f"{used_provider}: {model_short}\n\n{reply_text}"
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=fallback_reply,
                                                 parse_mode=None)
     else:
         # Длинный текст: удаляем статус и шлем частями
@@ -189,19 +210,40 @@ async def process_llm(update: Update, context, final_query: str):
         except:
             pass
 
-        # Разбивка по символам
-        for i in range(0, len(full_reply), MAX_LEN):
-            part = full_reply[i:i + MAX_LEN]
+        # Разбивка по абзацам, чтобы не разрывать теги
+        paragraphs = full_reply.split('\n')
+        current_chunk = ""
+
+        for paragraph in paragraphs:
+            # Если один абзац сам по себе длиннее лимита (редко, но бывает)
+            if len(paragraph) > MAX_LEN:
+                # Если в корзине что-то было, отправляем
+                if current_chunk:
+                    await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode='HTML')
+                    current_chunk = ""
+
+                # Режем гигантский абзац просто по символам (тут форматирование может слететь, но это крайний случай)
+                for i in range(0, len(paragraph), MAX_LEN):
+                    await context.bot.send_message(chat_id=chat_id, text=paragraph[i:i + MAX_LEN], parse_mode=None)
+                continue
+
+            # Если добавление абзаца превысит лимит — отправляем текущую корзину
+            if len(current_chunk) + len(paragraph) + 1 > MAX_LEN:
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode='HTML')
+                except:
+                    await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode=None)
+                current_chunk = paragraph + '\n'
+                await asyncio.sleep(0.3)
+            else:
+                current_chunk += paragraph + '\n'
+
+        # Отправляем остаток
+        if current_chunk:
             try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=part,
-                    parse_mode='HTML',
-                    reply_to_message_id=reply_to_message_id if i == 0 else None
-                )
+                await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode='HTML')
             except:
-                await context.bot.send_message(chat_id=chat_id, text=part, parse_mode=None)
-            await asyncio.sleep(0.5)
+                await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode=None)
 
 async def start(update: Update, context) -> None:
     user_id = update.effective_user.id
