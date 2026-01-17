@@ -3,3 +3,4 @@ python-telegram-bot
 python-dotenv
 google-genai
 openai
+asyncio
