@@ -15,11 +15,11 @@ load_dotenv()
 
 InspectorGPT = os.getenv('InspectorGPT')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-BOT_USERNAME = os.getenv('BOT_USERNAME').lstrip("@").lower()  # без @
+BOT_USERNAME = os.getenv('BOT_USERNAME', '').lstrip("@").lower()
 CORRECT_PASSWORD = os.getenv('Password')
 OPEN_ROUTER_API_KEY = os.getenv('OPEN_ROUTER_API_KEY')
 
-# ─── Инициализация Gemini клиента ───
+# ─── Инициализация клиента Gemini ───
 client = genai.Client(
     api_key=GEMINI_API_KEY,
     http_options=types.HttpOptions(
@@ -28,11 +28,11 @@ client = genai.Client(
 )
 
 SYSTEM_PROMPT = '''
-Ты — ИИ помощник.  
-Точная, понятная информация + фактчекинг.  
-Простой язык. Кратко (≤300 зн).  
-Редкий тонкий юмор ок. Форматируй текст ответа под Telegram  
-Только русский. Январь 2026.
+Ты — ИИ помощник. 
+1. Если запрос требует краткости — отвечай кратко (до 300 зн).
+2. Если пользователь просит "напиши сочинение", "подробно", "статью" или указывает объем (например, 5к символов) — игнорируй ограничение краткости и пиши развернуто.
+3. Точная информация + фактчекинг. Форматируй под Telegram.
+4. Только русский язык. Январь 2026.
 '''
 
 chat_histories = defaultdict(list)
@@ -40,24 +40,27 @@ authorized_users = set()
 
 AUTH_QUESTION = "Тут у нас пароль. Нужно отгадать загадку. Скажи, за какое время разгоняется нива до 100 км/ч"
 
-# --- ЭТАП 1: Прямое обращение к Google (Самый высокий приоритет) ---
-# Эти модели работают через твой прокси/Direct API.
 MODELS_PRIORITY = [
-    'models/gemini-3-flash-preview',      # Твой текущий лидер (уже работает!)
-    'models/gemini-2.0-flash-lite',       # Самая быстрая для простых команд
-    'models/gemini-2.0-flash-exp'         # Хорошая альтернатива
+    'models/gemini-3-flash-preview',
+    'models/gemini-2.0-flash-lite',
+    'models/gemini-2.0-flash-exp'
 ]
 
-# --- ЭТАП 2: OpenRouter (Только уникальные бесплатные модели) ---
 OPENROUTER_MODELS = [
-    "xiaomi/mimo-v2-flash:free",          # ХИТ 2026: 309B параметров, очень умная
-    "deepseek/deepseek-r1:free",          # Новая логика (замена старому chat)
-    "qwen/qwen3-235b-a22b:free",          # Новейший Qwen 3 (лучший для русского)
-    "meta-llama/llama-4-maverick:free",    # Четвертое поколение Llama (Scout/Maverick)
-    "mistralai/devstral-2-2512:free",     # Специальная модель для кодинга и логики
-    "microsoft/phi-4:free",               # Маленькая, но очень качественная
-    "nousresearch/hermes-3-llama-3.1-405b:free" # Запасной гигант
+    "xiaomi/mimo-v2-flash:free",
+    "deepseek/deepseek-r1:free",
+    "qwen/qwen3-235b-a22b:free",
+    "meta-llama/llama-4-maverick:free",
+    "mistralai/devstral-2-2512:free",
+    "microsoft/phi-4:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free"
 ]
+
+def escape_md_v2_full(text: str) -> str:
+    """Полное экранирование для MarkdownV2 — все специальные символы"""
+    special = r'_*[]()~`>#+-=|{}.!'
+    return ''.join('\\' + c if c in special else c for c in text)
+
 def is_bot_mentioned(message, bot_username: str) -> bool:
     if not message.entities:
         return False
@@ -74,182 +77,132 @@ async def process_llm(update: Update, context, final_query: str):
         return
 
     chat_id = update.effective_chat.id
-    # Для ответа в reply на сообщение пользователя
     reply_to_message_id = update.effective_message.message_id
 
+    # Обновляем историю
     history = chat_histories.get(chat_id, [])
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
     chat_histories[chat_id] = history[-6:]
 
-    # Отправляем начальное сообщение-статус
+    # Статус
     try:
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
-            text="⚡ Запускаю модели...\nПробую Gemini...",
-            reply_to_message_id=reply_to_message_id,
-            disable_notification=True
+            text="⚡ Запускаю модели...",
+            reply_to_message_id=reply_to_message_id
         )
         status_message_id = status_msg.message_id
-    except Exception as e:
-        print(f"Не удалось отправить статус: {e}")
+    except:
         return
 
     reply_text = None
     used_provider = None
     last_used_model = ""
 
-    # Пробуем модели Gemini по очереди
-    for current_model in MODELS_PRIORITY:
+    # ВАЖНО: Обновленный промпт для баланса краткости и длины
+    ADAPTIVE_SYSTEM_PROMPT = SYSTEM_PROMPT + "\nВАЖНО: Если просят длинный текст или сочинение — пиши подробно, игнорируя лимит 300 зн. Используй HTML-теги: <b>жирный</b>, <i>курсив</i>."
+
+    # ─── 1. Gemini ───
+    for model_path in MODELS_PRIORITY:
+        model_name = model_path.split('/')[-1]
+        try:
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id,
+                                                text=f"🔄 Gemini: {model_name}...")
+
+            response = client.models.generate_content(
+                model=model_path,
+                contents=[Content(role="model", parts=[types.Part(text=ADAPTIVE_SYSTEM_PROMPT)])] + history,
+                config=GenerateContentConfig(
+                    temperature=0.75,
+                    max_output_tokens=4000,  # Увеличено для длинных ответов
+                    top_p=0.92
+                )
+            )
+            if response and response.text:
+                reply_text = response.text.strip()
+                used_provider = "Gemini"
+                last_used_model = model_path
+                break
+        except:
+            continue
+
+    # ─── 2. OpenRouter Fallback ───
+    if not reply_text:
+        or_client = OpenAI(api_key=OPEN_ROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
+        or_messages = [{"role": "system", "content": ADAPTIVE_SYSTEM_PROMPT}]
+        for msg in history:
+            role = "user" if msg.role == "user" else "assistant"
+            text_part = msg.parts[0].text if hasattr(msg.parts[0], 'text') else str(msg.parts[0])
+            or_messages.append({"role": role, "content": text_part})
+
+        for model_path in OPENROUTER_MODELS:
+            model_name = model_path.split('/')[-1]
+            try:
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id,
+                                                    text=f"🔄 OR: {model_name}...")
+                response = or_client.chat.completions.create(
+                    model=model_path,
+                    messages=or_messages,
+                    temperature=0.75,
+                    max_tokens=4000  # Увеличено
+                )
+                if response.choices and response.choices[0].message.content:
+                    reply_text = response.choices[0].message.content.strip()
+                    used_provider = "OR"
+                    last_used_model = model_path
+                    break
+            except:
+                continue
+
+    # ─── 3. Финальная отправка (ВНЕ ЦИКЛОВ) ───
+    if not reply_text:
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text="❌ Модели недоступны.")
+        return
+
+    # Сохраняем в историю
+    chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
+
+    # Формируем заголовок с HTML
+    model_short = last_used_model.split('/')[-1]
+    full_reply = f"<b>{used_provider}: {model_short}</b>\n\n{reply_text}"
+
+    # Telegram limit ~4096
+    MAX_LEN = 4000
+
+    if len(full_reply) <= MAX_LEN:
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=status_message_id,
-                text=f"🔄 Пробую Gemini: {current_model.split('/')[-1]}..."
-            )
-
-            response = client.models.generate_content(
-                model=current_model,
-                contents=[Content(role="model", parts=[types.Part(text=SYSTEM_PROMPT)])] + history,
-                config=GenerateContentConfig(
-                    temperature=0.75,
-                    max_output_tokens=512,
-                    top_p=0.92
-                )
-            )
-
-            if response and response.text:
-                reply_text = response.text.strip()
-                used_provider = "Gemini"
-                last_used_model = current_model
-                break
-
-        except Exception as e:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_message_id,
-                text=f"❌ {current_model.split('/')[-1]} ошибка\nПробую следующую..."
-            )
-            await asyncio.sleep(0.5)
-            continue
-
-    # Если ничего не получилось — OpenRouter
-    if not reply_text:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_message_id,
-            text="⚠️ Gemini недоступны\n→ Перехожу на OpenRouter..."
-        )
-        await asyncio.sleep(0.7)
-
-        or_client = OpenAI(
-            api_key=OPEN_ROUTER_API_KEY,
-            base_url="https://openrouter.ai/api/v1",
-        )
-
-        or_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for msg in history:
-            role = "user" if msg.role == "user" else "assistant"
-            raw_text = msg.parts[0].text if hasattr(msg.parts[0], 'text') else str(msg.parts[0])
-            or_messages.append({"role": role, "content": raw_text})
-
-        for or_model in OPENROUTER_MODELS:
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    text=f"🔄 Пробую {or_model.split('/')[-1]} (OpenRouter)..."
-                )
-
-                response = or_client.chat.completions.create(
-                    model=or_model,
-                    messages=or_messages,
-                    temperature=0.75,
-                    max_tokens=512,
-                    extra_headers={
-                        "HTTP-Referer": "http://localhost",
-                        "X-Title": "InspectorGPT",
-                    }
-                )
-
-                if response.choices and response.choices[0].message.content:
-                    reply_text = response.choices[0].message.content.strip()
-                    used_provider = "OR"
-                    last_used_model = or_model
-                    break
-
-            except Exception as e:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    text=f"❌ {or_model.split('/')[-1]} ошибка\nСледующая..."
-                )
-                await asyncio.sleep(0.5)
-                continue
-
-    # Финальная обработка ответа
-    model_short_name = last_used_model.split('/')[-1] if last_used_model else "неизвестно"
-    source_line = f"({used_provider}: {model_short_name})"
-
-    if reply_text:
-        chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
-
-        full_text = f"{source_line}\n\n{reply_text}"
-
-        # Короткий ответ — редактируем статус
-        if len(full_text) <= 4000:
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    text=full_text,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
-                return
-            except Exception:
-                # Если не получилось отредактировать — отправим новое
-                pass
-
-        # Длинный ответ — разбиваем
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_message_id,
-            text=f"{source_line}\n\nОтвет длинный → отправляю частями..."
-        )
-
-        # Разбиение на части
-        chunks = []
-        current_chunk = ""
-        for line in reply_text.splitlines(keepends=True):
-            if len(current_chunk) + len(line) > 3900:
-                chunks.append(current_chunk)
-                current_chunk = line
-            else:
-                current_chunk += line
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        for i, chunk in enumerate(chunks, 1):
-            part_text = f"Часть {i}/{len(chunks)}\n\n{chunk.strip()}"
-            if i == 1:
-                part_text = f"{source_line}\n\n{part_text}"
-
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=part_text,
-                reply_to_message_id=reply_to_message_id,
-                parse_mode="Markdown",
-                disable_notification=True,
+                text=full_reply,
+                parse_mode='HTML',
                 disable_web_page_preview=True
             )
-            await asyncio.sleep(0.4)  # небольшая пауза между частями
-
+        except Exception as e:
+            # Если HTML сломался (например, ИИ забыл закрыть тег </b>), шлем чистым текстом
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=full_reply,
+                                                parse_mode=None)
     else:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_message_id,
-            text="❌ Все модели сейчас недоступны.\nПопробуйте через минуту-две."
-        )
+        # Длинный текст: удаляем статус и шлем частями
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=status_message_id)
+        except:
+            pass
+
+        # Разбивка по символам
+        for i in range(0, len(full_reply), MAX_LEN):
+            part = full_reply[i:i + MAX_LEN]
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=part,
+                    parse_mode='HTML',
+                    reply_to_message_id=reply_to_message_id if i == 0 else None
+                )
+            except:
+                await context.bot.send_message(chat_id=chat_id, text=part, parse_mode=None)
+            await asyncio.sleep(0.5)
+
 async def start(update: Update, context) -> None:
     user_id = update.effective_user.id
     if user_id in authorized_users:
@@ -265,17 +218,11 @@ async def handle_private(update: Update, context) -> None:
     if user_id not in authorized_users:
         if text.lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
-            await update.message.reply_text(
-                "Авторизация пройдена! 🎉\nТеперь можешь задавать вопросы."
-            )
+            await update.message.reply_text("Авторизация пройдена! 🎉\nТеперь можешь задавать вопросы.")
         else:
-            await update.message.reply_text(
-                "Неправильный пароль 😕\n\n"
-                "Напиши /start и попробуй снова"
-            )
+            await update.message.reply_text("Неправильный пароль 😕\n\nНапиши /start и попробуй снова")
         return
 
-    # Если сообщение пустое после strip — не обрабатываем
     if not text:
         await update.message.reply_text("Напиши что-нибудь, я готов отвечать 😏")
         return
@@ -291,7 +238,6 @@ async def handle_group(update: Update, context) -> None:
     if not is_bot_mentioned(message, BOT_USERNAME):
         return
 
-    # Убираем @botname из текста
     clean_text = message.text
     for entity in message.entities or []:
         if entity.type == "mention":
@@ -300,11 +246,9 @@ async def handle_group(update: Update, context) -> None:
                 clean_text = clean_text.replace(mention, "", 1).strip()
                 break
 
-    # Добавляем контекст из ответа, если сообщение — reply
     prompt = ""
     if message.reply_to_message and message.reply_to_message.text:
         prompt = f"Контекст (ответ на сообщение): {message.reply_to_message.text}\n\n"
-
     prompt += clean_text
 
     if not prompt.strip():
@@ -318,10 +262,12 @@ def main() -> None:
     if not InspectorGPT:
         print("Ошибка: Токен Telegram (InspectorGPT) не найден!")
         return
+
     application = ApplicationBuilder().token(InspectorGPT).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_private))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, handle_group))
+
     print("Бот запущен...")
     application.run_polling()
 
