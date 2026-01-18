@@ -28,10 +28,10 @@ client = genai.Client(
 
 SYSTEM_PROMPT = '''
 Ты — ИИ помощник. 
-1. Если запрос требует краткости — отвечай кратко (до 300 зн).
+1. Точная информация + фактчекинг.Укажи на сколько % это правда.
 2. Если пользователь просит "напиши сочинение", "подробно", "статью" или указывает объем (например, 5к символов) — игнорируй ограничение краткости и пиши развернуто.
-3. Точная информация + фактчекинг. Форматируй под Telegram.
-4. Только русский язык. Январь 2026.
+3. Если запрос требует краткости — отвечай кратко (до 300 зн).
+4. Только русский язык. Январь 2026. Форматируй под Telegram.
 '''
 
 chat_histories = defaultdict(list)
@@ -117,7 +117,7 @@ async def process_llm(update: Update, context, final_query: str):
     last_used_model = ""
 
     # ВАЖНО: Обновленный промпт для баланса краткости и длины
-    ADAPTIVE_SYSTEM_PROMPT = SYSTEM_PROMPT + "\nВАЖНО: Если просят длинный текст или сочинение — пиши подробно, игнорируя лимит 300 зн. Используй HTML-теги: <b>жирный</b>, <i>курсив</i>."
+    ADAPTIVE_SYSTEM_PROMPT = SYSTEM_PROMPT + "\nВАЖНО: Если просят длинный текст или сочинение — пиши подробно, игнорируя лимит 300 зн.Январь 2026. Используй HTML-теги: <b>жирный</b>, <i>курсив</i>."
 
     # ─── 1. Gemini ───
     for model_path in MODELS_PRIORITY:
@@ -255,18 +255,24 @@ async def start(update: Update, context) -> None:
 
 async def handle_private(update: Update, context) -> None:
     user_id = update.effective_user.id
-    text = update.message.text.strip()
+    message = update.message
+    if not message: return
 
+    # ИСПРАВЛЕНИЕ 1: Берем текст сообщения ИЛИ подпись к медиафайлу
+    raw_text = message.text or message.caption or ""
+    text = raw_text.strip()
+
+    # Логика авторизации
     if user_id not in authorized_users:
         if text.lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
-            await update.message.reply_text("Авторизация пройдена! 🎉\nТеперь можешь задавать вопросы.")
+            await message.reply_text("Авторизация пройдена! 🎉\nТеперь можешь задавать вопросы.")
         else:
-            await update.message.reply_text("Неправильный пароль 😕\n\nНапиши /start и попробуй снова")
+            await message.reply_text("Неправильный пароль 😕\n\nНапиши /start и попробуй снова")
         return
 
     if not text:
-        await update.message.reply_text("Напиши что-нибудь, я готов отвечать 😏")
+        await message.reply_text("Напиши что-нибудь текстом или в подписи к фото 😏")
         return
 
     await process_llm(update, context, text)
@@ -274,27 +280,41 @@ async def handle_private(update: Update, context) -> None:
 
 async def handle_group(update: Update, context) -> None:
     message = update.message
-    if not message or not message.text:
+    if not message: return
+
+    # ИСПРАВЛЕНИЕ 2: Читаем текст из любого источника (сообщение/фото/видео)
+    content_text = message.text or message.caption or ""
+    if not content_text:
         return
 
+    # Проверка упоминания (is_bot_mentioned уже есть в твоем коде)
     if not is_bot_mentioned(message, BOT_USERNAME):
         return
 
-    clean_text = message.text
-    for entity in message.entities or []:
+    clean_text = content_text
+
+    # ИСПРАВЛЕНИЕ: приводим к list, чтобы сложение работало корректно
+    all_entities = list(message.entities or []) + list(message.caption_entities or [])
+
+    for entity in all_entities:
         if entity.type == "mention":
-            mention = message.text[entity.offset: entity.offset + entity.length]
+            mention = content_text[entity.offset: entity.offset + entity.length]
             if mention.lower() == f"@{BOT_USERNAME.lower()}":
                 clean_text = clean_text.replace(mention, "", 1).strip()
                 break
 
     prompt = ""
-    if message.reply_to_message and message.reply_to_message.text:
-        prompt = f"Контекст (ответ на сообщение): {message.reply_to_message.text}\n\n"
+    # ИСПРАВЛЕНИЕ 4: Контекст ответа (тоже учитываем подписи)
+    if message.reply_to_message:
+        reply = message.reply_to_message
+        reply_text = reply.text or reply.caption or ""
+        if reply_text:
+            prompt = f"Контекст (ответ на сообщение): {reply_text}\n\n"
+
     prompt += clean_text
 
     if not prompt.strip():
-        await message.reply_text("Напиши что-нибудь после упоминания меня 😏")
+        await message.reply_text("Напиши вопрос после упоминания меня 😏")
         return
 
     await process_llm(update, context, prompt)
@@ -302,15 +322,29 @@ async def handle_group(update: Update, context) -> None:
 
 def main() -> None:
     if not InspectorGPT:
-        print("Ошибка: Токен Telegram (InspectorGPT) не найден!")
+        print("Ошибка: Токен Telegram не найден!")
         return
 
     application = ApplicationBuilder().token(InspectorGPT).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_private))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, handle_group))
 
-    print("Бот запущен...")
+    # Создаем универсальный фильтр: Текст ИЛИ Фото ИЛИ Видео ИЛИ Документы
+    message_filter = filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL
+
+    application.add_handler(CommandHandler("start", start))
+
+    # Применяем фильтр для лички
+    application.add_handler(MessageHandler(
+        message_filter & filters.ChatType.PRIVATE,
+        handle_private
+    ))
+
+    # Применяем фильтр для групп (исключая команды)
+    application.add_handler(MessageHandler(
+        message_filter & ~filters.COMMAND & ~filters.ChatType.PRIVATE,
+        handle_group
+    ))
+
+    print("Бот запущен с поддержкой медиа-подписей...")
     application.run_polling()
 
 
