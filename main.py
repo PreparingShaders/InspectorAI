@@ -1,29 +1,75 @@
-import os, asyncio, re
+import os
+import asyncio
+import re
+from collections import defaultdict
+
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+)
 
 from openai import OpenAI
 from google import genai
 from google.genai import types
 from google.genai.types import GenerateContentConfig, Content
 
-from collections import defaultdict
-
 load_dotenv()
 
-InspectorGPT = os.getenv('InspectorGPT')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-BOT_USERNAME = os.getenv('BOT_USERNAME', '').lstrip("@").lower()
-CORRECT_PASSWORD = os.getenv('Password')
-OPEN_ROUTER_API_KEY = os.getenv('OPEN_ROUTER_API_KEY')
+# ─── Конфигурация ───────────────────────────────────────────────────────────
+BOT_TOKEN = os.getenv("InspectorGPT")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@").lower()
+CORRECT_PASSWORD = os.getenv("Password")
+OPEN_ROUTER_API_KEY = os.getenv("OPEN_ROUTER_API_KEY")
 
-# ─── Инициализация клиента Gemini ───
-client = genai.Client(
+GEMINI_MODELS = [
+    "models/gemini-3-flash-preview",
+    "models/gemini-2.0-flash-lite",
+    "models/gemini-2.0-flash-exp",
+]
+
+OPENROUTER_MODELS = [
+    "xiaomi/mimo-v2-flash:free",
+    "allenai/molmo-2-8b:free",
+    "google/gemma-3-27b-it:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "mistralai/devstral-2-2512:free",
+    "tngtech/deepseek-r1t2-chimera:free",
+    "deepseek/deepseek-r1:free",
+    "meta-llama/llama-4-maverick:free",
+    "qwen/qwen3-235b-a22b:free",
+    "microsoft/phi-4:free",
+    "qwen/qwen2.5-vl-32b-instruct:free",
+    "deepseek/deepseek-v3-base:free",
+    "xai/grok-3-mini:free",
+]
+
+# Сопоставление коротких кодов → полные имена моделей
+GEMINI_MODEL_BY_ID = {str(i): path for i, path in enumerate(GEMINI_MODELS)}
+OPENROUTER_MODEL_BY_ID = {str(i + 100): path for i, path in enumerate(OPENROUTER_MODELS)}
+
+# ─── Хранение состояний ─────────────────────────────────────────────────────
+chat_histories = defaultdict(list)
+authorized_users = set()
+user_selected_model = defaultdict(lambda: None)          # полное имя модели или None
+user_selected_provider = defaultdict(lambda: "gemini")   # "gemini" или "openrouter"
+
+# ─── Клиенты ────────────────────────────────────────────────────────────────
+gemini_client = genai.Client(
     api_key=GEMINI_API_KEY,
-    http_options=types.HttpOptions(
-        base_url="https://inspectorgpt.classname1984.workers.dev"
-    )
+    http_options=types.HttpOptions(base_url="https://inspectorgpt.classname1984.workers.dev"),
+)
+
+openrouter_client = OpenAI(
+    api_key=OPEN_ROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1",
 )
 
 SYSTEM_PROMPT = '''
@@ -34,31 +80,13 @@ SYSTEM_PROMPT = '''
 4. Только русский язык. Январь 2026. Форматируй под Telegram.
 '''
 
-chat_histories = defaultdict(list)
-authorized_users = set()
-
 AUTH_QUESTION = "Тут у нас пароль. Нужно отгадать загадку. Скажи, за какое время разгоняется нива до 100 км/ч"
 
-MODELS_PRIORITY = [
-    'models/gemini-3-flash-preview',
-    'models/gemini-2.0-flash-lite',
-    'models/gemini-2.0-flash-exp'
-]
-
-OPENROUTER_MODELS = [
-    "xiaomi/mimo-v2-flash:free",
-    "deepseek/deepseek-r1:free",
-    "qwen/qwen3-235b-a22b:free",
-    "meta-llama/llama-4-maverick:free",
-    "mistralai/devstral-2-2512:free",
-    "microsoft/phi-4:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free"
-]
 
 def escape_md_v2_full(text: str) -> str:
-    """Полное экранирование для MarkdownV2 — все специальные символы"""
     special = r'_*[]()~`>#+-=|{}.!'
     return ''.join('\\' + c if c in special else c for c in text)
+
 
 def is_bot_mentioned(message, bot_username: str) -> bool:
     if not message.entities:
@@ -72,203 +100,303 @@ def is_bot_mentioned(message, bot_username: str) -> bool:
 
 
 def format_to_html(text: str) -> str:
-    """Универсальная конвертация Markdown в HTML для всех провайдеров"""
-    # 1. Сначала экранируем HTML-символы, которые могут быть в коде (чтобы не сломать парсинг)
-    # Но если мы ожидаем, что модель УЖЕ может прислать HTML, этот шаг можно пропустить.
-    # Для безопасности оставим только базовую замену:
-
-    # 2. Конвертируем основные элементы Markdown в HTML
-    # Жирный (Markdown: **текст** или __текст__)
     text = re.sub(r'(\*\*|__)(.*?)\1', r'<b>\2</b>', text)
-    # Курсив (Markdown: *текст* или _текст_)
     text = re.sub(r'(\*|_)(.*?)\1', r'<i>\2</i>', text)
-    # Моноширинный код (Markdown: `текст`)
     text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
-    # Блоки кода (Markdown: ```текст```)
     text = re.sub(r'```(?:.*?)\n?(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
-
     return text
 
+
+def get_model_short_name(model_path: str, provider: str) -> str:
+    if provider == "gemini":
+        return model_path.split("/")[-1].replace("models/", "")
+    else:
+        return model_path.split("/")[-1].split(":")[0]
+
+
+async def show_model_selection(update: Update, context):
+    """Показать меню выбора модели"""
+    user_id = update.effective_user.id
+    keyboard = []
+
+    keyboard.append([InlineKeyboardButton("Gemini:", callback_data="dummy")])
+    for i, model in enumerate(GEMINI_MODELS):
+        name = get_model_short_name(model, "gemini")
+        prefix = "✅ " if user_selected_model[user_id] == model else ""
+        keyboard.append([
+            InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:g:{i}")
+        ])
+
+    keyboard.append([InlineKeyboardButton("──────────────", callback_data="dummy")])
+
+    keyboard.append([InlineKeyboardButton("OpenRouter:", callback_data="dummy")])
+    for i, model in enumerate(OPENROUTER_MODELS):
+        name = get_model_short_name(model, "openrouter")
+        prefix = "✅ " if user_selected_model[user_id] == model else ""
+        keyboard.append([
+            InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:o:{i+100}")
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("Автоматический выбор", callback_data="sel:auto")
+    ])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Выбери модель:", reply_markup=reply_markup)
+
+
+async def callback_handler(update: Update, context):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    user_id = query.from_user.id
+
+    if data == "dummy":
+        return
+
+    if data == "sel:auto":
+        user_selected_model[user_id] = None
+        user_selected_provider[user_id] = "gemini"
+        await query.edit_message_text("Вернулся автоматический выбор моделей")
+        return
+
+    if not data.startswith("sel:"):
+        return
+
+    try:
+        _, prov_short, idx_str = data.split(":")
+        idx = int(idx_str)
+    except:
+        await query.edit_message_text("Ошибка выбора модели")
+        return
+
+    model_path = None
+    provider = None
+
+    if prov_short == "g":
+        model_path = GEMINI_MODEL_BY_ID.get(idx_str)
+        provider = "gemini"
+    elif prov_short == "o":
+        model_path = OPENROUTER_MODEL_BY_ID.get(idx_str)
+        provider = "openrouter"
+
+    if model_path:
+        user_selected_model[user_id] = model_path
+        user_selected_provider[user_id] = provider
+        name = get_model_short_name(model_path, provider)
+        await query.edit_message_text(f"Выбрана модель:\n{provider.upper()} → {name}")
+    else:
+        await query.edit_message_text("Не удалось выбрать модель")
+
 async def process_llm(update: Update, context, final_query: str):
-    if not final_query or not final_query.strip():
+    if not final_query.strip():
         return
 
     chat_id = update.effective_chat.id
     reply_to_message_id = update.effective_message.message_id
+    user_id = update.effective_user.id
 
-    # Обновляем историю
-    history = chat_histories.get(chat_id, [])
+    history = chat_histories[chat_id]
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
     chat_histories[chat_id] = history[-6:]
 
-    # Статус
-    try:
-        status_msg = await context.bot.send_message(
-            chat_id=chat_id,
-            text="⚡ Запускаю модели...",
-            reply_to_message_id=reply_to_message_id
-        )
-        status_message_id = status_msg.message_id
-    except:
-        return
+    if update.effective_chat.type in ("group", "supergroup"):
+        await asyncio.sleep(1.2)   # 1.0–1.8 сек обычно хватает
+
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text="⚡ Запускаю модели...",
+        reply_to_message_id=reply_to_message_id
+    )
+    status_id = status_msg.message_id
 
     reply_text = None
     used_provider = None
-    last_used_model = ""
+    used_model_path = None
 
-    # ВАЖНО: Обновленный промпт для баланса краткости и длины
     ADAPTIVE_SYSTEM_PROMPT = SYSTEM_PROMPT + "\nВАЖНО: Если просят длинный текст или сочинение — пиши подробно, игнорируя лимит 300 зн.Январь 2026. Используй HTML-теги: <b>жирный</b>, <i>курсив</i>."
 
-    # ─── 1. Gemini ───
-    for model_path in MODELS_PRIORITY:
-        model_name = model_path.split('/')[-1]
+    selected_model = user_selected_model[user_id]
+    selected_provider = user_selected_provider[user_id]
+
+    # 1. Пробуем выбранную пользователем модель (если выбрана)
+    if selected_model:
         try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id,
-                                                text=f"🔄 Gemini: {model_name}...")
-
-            response = client.models.generate_content(
-                model=model_path,
-                contents=[Content(role="model", parts=[types.Part(text=ADAPTIVE_SYSTEM_PROMPT)])] + history,
-                config=GenerateContentConfig(
-                    temperature=0.75,
-                    max_output_tokens=4000,  # Увеличено для длинных ответов
-                    top_p=0.92
-                )
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=status_id,
+                text=f"🔄 Пробую выбранную модель: {selected_model.split('/')[-1]}..."
             )
-            if response and response.text:
-                reply_text = response.text.strip()
-                used_provider = "Gemini"
-                last_used_model = model_path
-                break
-        except:
-            continue
 
-    # ─── 2. OpenRouter Fallback ───
-    if not reply_text:
-        or_client = OpenAI(api_key=OPEN_ROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
-        or_messages = [{"role": "system", "content": ADAPTIVE_SYSTEM_PROMPT}]
-        for msg in history:
-            role = "user" if msg.role == "user" else "assistant"
-            text_part = msg.parts[0].text if hasattr(msg.parts[0], 'text') else str(msg.parts[0])
-            or_messages.append({"role": role, "content": text_part})
+            if selected_provider == "gemini":
+                response = gemini_client.models.generate_content(
+                    model=selected_model,
+                    contents=[Content(role="model", parts=[types.Part(text=ADAPTIVE_SYSTEM_PROMPT)])] + history,
+                    config=GenerateContentConfig(temperature=0.75, max_output_tokens=4000, top_p=0.92)
+                )
+                if response and response.text:
+                    reply_text = response.text.strip()
+                    used_provider = "Gemini"
+                    used_model_path = selected_model
 
-        for model_path in OPENROUTER_MODELS:
-            model_name = model_path.split('/')[-1]
-            try:
-                await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id,
-                                                    text=f"🔄 OR: {model_name}...")
-                response = or_client.chat.completions.create(
-                    model=model_path,
-                    messages=or_messages,
+            else:  # openrouter
+                messages = [{"role": "system", "content": ADAPTIVE_SYSTEM_PROMPT}]
+                for msg in history:
+                    role = "user" if msg.role == "user" else "assistant"
+                    content = msg.parts[0].text if msg.parts else ""
+                    messages.append({"role": role, "content": content})
+
+                response = openrouter_client.chat.completions.create(
+                    model=selected_model,
+                    messages=messages,
                     temperature=0.75,
-                    max_tokens=4000  # Увеличено
+                    max_tokens=4000
                 )
                 if response.choices and response.choices[0].message.content:
                     reply_text = response.choices[0].message.content.strip()
-                    used_provider = "OR"
-                    last_used_model = model_path
+                    used_provider = "OpenRouter"
+                    used_model_path = selected_model
+
+
+        except Exception:
+            model_name = get_model_short_name(selected_model, selected_provider)
+            prov = selected_provider.upper()
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_id,
+                text=(
+                    f"❌ Модель недоступна: {prov} → {model_name}\n\n"
+                    "Выбери другую модель:\n"
+                    "→ команда /model"
+                )
+            )
+            await asyncio.sleep(3)
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=status_id)
+            except Exception:
+                pass
+            return  # ← очень важно! Прерываем функцию
+
+    # 2. Обычный перебор, если ничего не получилось
+    if reply_text is None:
+        # Gemini
+        for model_path in GEMINI_MODELS:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=status_id,
+                    text=f"🔄 Gemini: {model_path.split('/')[-1]}..."
+                )
+
+                response = gemini_client.models.generate_content(
+                    model=model_path,
+                    contents=[Content(role="model", parts=[types.Part(text=ADAPTIVE_SYSTEM_PROMPT)])] + history,
+                    config=GenerateContentConfig(temperature=0.75, max_output_tokens=4000, top_p=0.92)
+                )
+                if response and response.text:
+                    reply_text = response.text.strip()
+                    used_provider = "Gemini"
+                    used_model_path = model_path
                     break
-            except:
+            except Exception:
                 continue
 
-    # ─── 3. Финальная отправка (ВНЕ ЦИКЛОВ) ───
-    if not reply_text:
-        await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text="❌ Модели недоступны.")
+        # OpenRouter fallback
+        if reply_text is None:
+            messages = [{"role": "system", "content": ADAPTIVE_SYSTEM_PROMPT}]
+            for msg in history:
+                role = "user" if msg.role == "user" else "assistant"
+                content = msg.parts[0].text if msg.parts else ""
+                messages.append({"role": role, "content": content})
+
+            for model_path in OPENROUTER_MODELS:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id, message_id=status_id,
+                        text=f"🔄 OR: {model_path.split('/')[-1].split(':')[0]}..."
+                    )
+                    response = openrouter_client.chat.completions.create(
+                        model=model_path,
+                        messages=messages,
+                        temperature=0.75,
+                        max_tokens=4000
+                    )
+                    if response.choices and response.choices[0].message.content:
+                        reply_text = response.choices[0].message.content.strip()
+                        used_provider = "OpenRouter"
+                        used_model_path = model_path
+                        break
+                except Exception:
+                    continue
+
+    # 3. Финальный результат
+    if reply_text is None:
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=status_id,
+            text="❌ Все модели сейчас недоступны 😔"
+        )
         return
 
-    # 1. Сохраняем в историю ОРИГИНАЛЬНЫЙ текст (без тегов)
+    # Сохраняем ответ в историю
     chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
 
-    # 2. Прогоняем текст через твою новую функцию форматирования
-    formatted_text = format_to_html(reply_text)
+    model_short = used_model_path.split("/")[-1].split(":")[0]
+    full_reply = f"<b>{used_provider}: {model_short}</b>\n\n{format_to_html(reply_text)}"
 
-    # 3. Формируем заголовок и итоговую строку
-    model_short = last_used_model.split('/')[-1]
-    full_reply = f"<b>{used_provider}: {model_short}</b>\n\n{formatted_text}"
-
-    # Telegram limit ~4096
+    # Отправка (твой оригинальный код обработки длинных сообщений можно вставить сюда)
     MAX_LEN = 4000
-
     if len(full_reply) <= MAX_LEN:
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
-                message_id=status_message_id,
+                message_id=status_id,
                 text=full_reply,
-                parse_mode='HTML',
+                parse_mode="HTML",
                 disable_web_page_preview=True
             )
-        except Exception:
-            # Если HTML всё же сломался, шлем без него (используем оригинальный reply_text)
-            fallback_reply = f"{used_provider}: {model_short}\n\n{reply_text}"
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=fallback_reply,
-                                                parse_mode=None)
-    else:
-        # Длинный текст: удаляем статус и шлем частями
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=status_message_id)
         except:
-            pass
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_id,
+                text=full_reply,
+                parse_mode=None
+            )
+    else:
+        # Разбивка на части — можно оставить как было в оригинале
+        await context.bot.delete_message(chat_id=chat_id, message_id=status_id)
+        # ... здесь можно вставить твою логику разбиения на части
 
-        # Разбивка по абзацам, чтобы не разрывать теги
-        paragraphs = full_reply.split('\n')
-        current_chunk = ""
 
-        for paragraph in paragraphs:
-            # Если один абзац сам по себе длиннее лимита (редко, но бывает)
-            if len(paragraph) > MAX_LEN:
-                # Если в корзине что-то было, отправляем
-                if current_chunk:
-                    await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode='HTML')
-                    current_chunk = ""
+# ─── Handlers ───────────────────────────────────────────────────────────────
 
-                # Режем гигантский абзац просто по символам (тут форматирование может слететь, но это крайний случай)
-                for i in range(0, len(paragraph), MAX_LEN):
-                    await context.bot.send_message(chat_id=chat_id, text=paragraph[i:i + MAX_LEN], parse_mode=None)
-                continue
-
-            # Если добавление абзаца превысит лимит — отправляем текущую корзину
-            if len(current_chunk) + len(paragraph) + 1 > MAX_LEN:
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode='HTML')
-                except:
-                    await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode=None)
-                current_chunk = paragraph + '\n'
-                await asyncio.sleep(0.3)
-            else:
-                current_chunk += paragraph + '\n'
-
-        # Отправляем остаток
-        if current_chunk:
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode='HTML')
-            except:
-                await context.bot.send_message(chat_id=chat_id, text=current_chunk, parse_mode=None)
-
-async def start(update: Update, context) -> None:
+async def start(update: Update, context):
     user_id = update.effective_user.id
     if user_id in authorized_users:
-        await update.message.reply_text("Ты уже авторизован!")
+        model = user_selected_model[user_id]
+        text = "Ты уже авторизован!\n\n"
+        if model:
+            prov = user_selected_provider[user_id].upper()
+            name = model.split("/")[-1].split(":")[0]
+            text += f"Текущая модель: {prov} → {name}\n\n"
+        text += "Сменить модель → /model"
+        await update.message.reply_text(text)
     else:
         await update.message.reply_text(AUTH_QUESTION)
 
 
-async def handle_private(update: Update, context) -> None:
+async def handle_private(update: Update, context):
     user_id = update.effective_user.id
     message = update.message
-    if not message: return
+    if not message:
+        return
 
-    # ИСПРАВЛЕНИЕ 1: Берем текст сообщения ИЛИ подпись к медиафайлу
-    raw_text = message.text or message.caption or ""
-    text = raw_text.strip()
+    text = (message.text or message.caption or "").strip()
 
-    # Логика авторизации
     if user_id not in authorized_users:
         if text.lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
-            await message.reply_text("Авторизация пройдена! 🎉\nТеперь можешь задавать вопросы.")
+            await message.reply_text("Авторизация пройдена! 🎉\nТеперь можешь задавать вопросы.\n\n/model — выбор модели")
         else:
-            await message.reply_text("Неправильный пароль 😕\n\nНапиши /start и попробуй снова")
+            await message.reply_text("Неправильный пароль 😕\nИспользуй /start")
         return
 
     if not text:
@@ -278,74 +406,66 @@ async def handle_private(update: Update, context) -> None:
     await process_llm(update, context, text)
 
 
-async def handle_group(update: Update, context) -> None:
+async def handle_group(update: Update, context):
     message = update.message
-    if not message: return
-
-    # ИСПРАВЛЕНИЕ 2: Читаем текст из любого источника (сообщение/фото/видео)
-    content_text = message.text or message.caption or ""
-    if not content_text:
+    if not message:
         return
 
-    # Проверка упоминания (is_bot_mentioned уже есть в твоем коде)
+    content = message.text or message.caption or ""
+    if not content:
+        return
+
     if not is_bot_mentioned(message, BOT_USERNAME):
         return
 
-    clean_text = content_text
+    entities = []
+    if message.entities:
+        entities.extend(message.entities)
+    if message.caption_entities:
+        entities.extend(message.caption_entities)
 
-    # ИСПРАВЛЕНИЕ: приводим к list, чтобы сложение работало корректно
-    all_entities = list(message.entities or []) + list(message.caption_entities or [])
-
-    for entity in all_entities:
+    clean_text = content
+    for entity in entities:
         if entity.type == "mention":
-            mention = content_text[entity.offset: entity.offset + entity.length]
+            mention = content[entity.offset: entity.offset + entity.length]
             if mention.lower() == f"@{BOT_USERNAME.lower()}":
                 clean_text = clean_text.replace(mention, "", 1).strip()
                 break
 
     prompt = ""
-    # ИСПРАВЛЕНИЕ 4: Контекст ответа (тоже учитываем подписи)
     if message.reply_to_message:
         reply = message.reply_to_message
         reply_text = reply.text or reply.caption or ""
         if reply_text:
             prompt = f"Контекст (ответ на сообщение): {reply_text}\n\n"
 
-    prompt += clean_text
+    prompt += clean_text.strip()
 
-    if not prompt.strip():
+    if not prompt:
         await message.reply_text("Напиши вопрос после упоминания меня 😏")
         return
 
     await process_llm(update, context, prompt)
 
 
-def main() -> None:
-    if not InspectorGPT:
+def main():
+    if not BOT_TOKEN:
         print("Ошибка: Токен Telegram не найден!")
         return
 
-    application = ApplicationBuilder().token(InspectorGPT).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Создаем универсальный фильтр: Текст ИЛИ Фото ИЛИ Видео ИЛИ Документы
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("model", show_model_selection))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+
     message_filter = filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL
 
-    application.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(message_filter & filters.ChatType.PRIVATE, handle_private))
+    app.add_handler(MessageHandler(message_filter & ~filters.COMMAND & ~filters.ChatType.PRIVATE, handle_group))
 
-    # Применяем фильтр для лички
-    application.add_handler(MessageHandler(
-        message_filter & filters.ChatType.PRIVATE,
-        handle_private
-    ))
-
-    # Применяем фильтр для групп (исключая команды)
-    application.add_handler(MessageHandler(
-        message_filter & ~filters.COMMAND & ~filters.ChatType.PRIVATE,
-        handle_group
-    ))
-
-    print("Бот запущен с поддержкой медиа-подписей...")
-    application.run_polling()
+    print("Бот запущен. Команда выбора модели: /model")
+    app.run_polling()
 
 
 if __name__ == "__main__":

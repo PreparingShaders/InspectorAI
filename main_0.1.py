@@ -201,6 +201,9 @@ async def process_llm(update: Update, context, final_query: str):
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
     chat_histories[chat_id] = history[-6:]
 
+    if update.effective_chat.type in ("group", "supergroup"):
+        await asyncio.sleep(1.2)   # 1.0–1.8 сек обычно хватает
+
     status_msg = await context.bot.send_message(
         chat_id=chat_id,
         text="⚡ Запускаю модели...",
@@ -415,10 +418,16 @@ async def handle_group(update: Update, context):
     if not is_bot_mentioned(message, BOT_USERNAME):
         return
 
+    entities = []
+    if message.entities:
+        entities.extend(message.entities)
+    if message.caption_entities:
+        entities.extend(message.caption_entities)
+
     clean_text = content
-    for entity in (message.entities or []) + (message.caption_entities or []):
+    for entity in entities:
         if entity.type == "mention":
-            mention = content[entity.offset : entity.offset + entity.length]
+            mention = content[entity.offset: entity.offset + entity.length]
             if mention.lower() == f"@{BOT_USERNAME.lower()}":
                 clean_text = clean_text.replace(mention, "", 1).strip()
                 break
