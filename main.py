@@ -29,9 +29,10 @@ CORRECT_PASSWORD = os.getenv("Password")
 OPEN_ROUTER_API_KEY = os.getenv("OPEN_ROUTER_API_KEY")
 
 GEMINI_MODELS = [
-    "models/gemini-3-flash-preview",
-    "models/gemini-2.0-flash-lite",
-    "models/gemini-2.0-flash-exp",
+    "models/gemini-2.5-flash",        # Стабильная, мощная, основной выбор
+    "models/gemini-2.5-flash-lite",   # Быстрая, высокие лимиты, дешевле
+    "models/gemini-3-flash-preview",  # Новинка, может иметь жесткие лимиты (20 зап/день)
+    "models/gemini-2.0-flash",        # Предыдущее поколение (если еще доступно)
 ]
 
 OPENROUTER_MODELS = [
