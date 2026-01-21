@@ -1,6 +1,7 @@
 import os
 import asyncio
 import re
+import time
 from collections import defaultdict
 from datetime import datetime
 
@@ -13,6 +14,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
+    ContextTypes
 )
 
 from openai import OpenAI
@@ -471,6 +473,58 @@ async def handle_group(update: Update, context):
 
     await process_llm(update, context, prompt)
 
+
+async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    # Проверяем наличие сообщения и текста
+    if not message or not message.text:
+        return
+
+    text = message.text
+
+    # Твои паттерны замен
+    replacements = {
+        r"(https?://)(www\.)?instagram\.com/": r"\1kkinstagram.com/",
+        r"(https?://)(www\.)?tiktok\.com/": r"\1vxtiktok.com/",
+        r"(https?://)(www\.)?twitter\.com/": r"\1fxtwitter.com/",
+        r"(https?://)(www\.)?x\.com/": r"\1fxtwitter.com/",
+    }
+
+    new_text = text
+    found = False
+
+    for pattern, replacement in replacements.items():
+        if re.search(pattern, new_text):
+            new_text = re.sub(pattern, replacement, new_text)
+            found = True
+
+    if found:
+        # 1. Пишем промежуточное сообщение
+        status_msg = await message.reply_text("🔍 Вижу ссылку для редактирования...правим эту хохму 🛠")
+
+        # 2. Ждем 1-3 секунды для "эффекта работы"
+        await asyncio.sleep(2.5)
+
+        # 3. Отправляем финальную ссылку
+        user_name = message.from_user.first_name
+        final_caption = f"✅ <b>Ссылка готова (от {user_name}):</b>\n\n{new_text}"
+
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=final_caption,
+            parse_mode="HTML",
+            disable_web_page_preview=False  # Оставляем превью для видео
+        )
+
+        # 4. Удаляем сообщение отправителя и статусное сообщение
+        try:
+            await message.delete()  # Удаляем оригинал с кривой ссылкой
+            await status_msg.delete()  # Удаляем текст "начинаю операцию"
+        except Exception as e:
+            print(f"Ошибка при удалении сообщений: {e}")
+            # Если бот не админ, он не сможет удалить сообщение пользователя
+
+
 def main():
     if not BOT_TOKEN:
         print("Ошибка: Токен Telegram не найден!")
@@ -478,6 +532,7 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    app.add_handler(MessageHandler(filters.Entity("url") | filters.Entity("text_link"), link_fixer))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("model", show_model_selection))
     app.add_handler(CallbackQueryHandler(callback_handler))
