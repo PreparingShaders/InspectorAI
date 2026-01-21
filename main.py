@@ -485,9 +485,11 @@ async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Твои паттерны замен
     replacements = {
         r"(https?://)(www\.)?instagram\.com/": r"\1kkinstagram.com/",
-        r"(https?://)(www\.)?tiktok\.com/": r"\1vxtiktok.com/",
+        # Используем tnktok.com — он сейчас стабильнее для vt. ссылок
+        r"(https?://)((vm|vt|www)\.)?tiktok\.com/": r"\1tnktok.com/",
         r"(https?://)(www\.)?twitter\.com/": r"\1fxtwitter.com/",
         r"(https?://)(www\.)?x\.com/": r"\1fxtwitter.com/",
+        r"(https?://)(www\.)?youtube\.com/shorts/": r"\1youtube.com/watch?v=",
     }
 
     new_text = text
