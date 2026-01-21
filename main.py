@@ -2,6 +2,7 @@ import os
 import asyncio
 import re
 from collections import defaultdict
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -27,6 +28,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@").lower()
 CORRECT_PASSWORD = os.getenv("Password")
 OPEN_ROUTER_API_KEY = os.getenv("OPEN_ROUTER_API_KEY")
+TO_DAY = datetime.now().isoformat()
 
 GEMINI_MODELS = [
     "models/gemini-2.5-flash",        # Стабильная, мощная, основной выбор
@@ -41,15 +43,10 @@ OPENROUTER_MODELS = [
     "google/gemma-3-27b-it:free",
     "nousresearch/hermes-3-llama-3.1-405b:free",
     "nvidia/nemotron-3-nano-30b-a3b:free",
-    "mistralai/devstral-2-2512:free",
+    "mistralai/devstral-2512:free",
     "tngtech/deepseek-r1t2-chimera:free",
-    "deepseek/deepseek-r1:free",
-    "meta-llama/llama-4-maverick:free",
-    "qwen/qwen3-235b-a22b:free",
-    "microsoft/phi-4:free",
-    "qwen/qwen2.5-vl-32b-instruct:free",
-    "deepseek/deepseek-v3-base:free",
-    "xai/grok-3-mini:free",
+    'liquid/lfm-2.5-1.2b-thinking:free',
+    'qwen/qwen3-next-80b-a3b-instruct:free',
 ]
 
 # Сопоставление коротких кодов → полные имена моделей
@@ -73,12 +70,13 @@ openrouter_client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
 )
 
-SYSTEM_PROMPT = '''
-Ты — ИИ помощник. 
-1. Точная информация + фактчекинг.Укажи на сколько % это правда.
-2. Если пользователь просит "напиши сочинение", "подробно", "статью" или указывает объем (например, 5к символов) — игнорируй ограничение краткости и пиши развернуто.
-3. Если запрос требует краткости — отвечай кратко (до 300 зн).
-4. Только русский язык. Январь 2026. Форматируй под Telegram.
+SYSTEM_PROMPT = f'''
+Ты — ИИ помощник. Текущая дата={TO_DAY} 
+1. Точная информация + фактчекинг.Проверка новостей на текущую дату.Укажи на сколько % это правда.
+2. Дефолтный ответ 250 зн, если просят развернутый или подробный игнорируй ограничение.
+3. Если требуется, можешь просматривать статьи в интернете и искать факты.
+4. Уместный юмор 7 из 10, подколы разрешены.
+5. Только русский язык.Форматируй под Telegram.
 '''
 
 AUTH_QUESTION = "Тут у нас пароль. Нужно отгадать загадку. Скажи, за какое время разгоняется нива до 100 км/ч"
@@ -188,7 +186,7 @@ async def callback_handler(update: Update, context):
         name = get_model_short_name(model_path, provider)
         await query.edit_message_text(f"Выбрана модель:\n{provider.upper()} → {name}")
     else:
-        await query.edit_message_text("Не удалось выбрать модель")
+        await query.edit_message_text("Не  удалось выбрать модель")
 
 async def process_llm(update: Update, context, final_query: str):
     if not final_query.strip():
@@ -200,7 +198,7 @@ async def process_llm(update: Update, context, final_query: str):
 
     history = chat_histories[chat_id]
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
-    chat_histories[chat_id] = history[-6:]
+    chat_histories[chat_id] = history[-4:]
 
     if update.effective_chat.type in ("group", "supergroup"):
         await asyncio.sleep(1.2)   # 1.0–1.8 сек обычно хватает
@@ -216,7 +214,7 @@ async def process_llm(update: Update, context, final_query: str):
     used_provider = None
     used_model_path = None
 
-    ADAPTIVE_SYSTEM_PROMPT = SYSTEM_PROMPT + "\nВАЖНО: Если просят длинный текст или сочинение — пиши подробно, игнорируя лимит 300 зн.Январь 2026. Используй HTML-теги: <b>жирный</b>, <i>курсив</i>."
+    ADAPTIVE_SYSTEM_PROMPT = SYSTEM_PROMPT + "\nИспользуй HTML-теги: <b>жирный</b>, <i>курсив</i>."
 
     selected_model = user_selected_model[user_id]
     selected_provider = user_selected_provider[user_id]
@@ -416,23 +414,48 @@ async def handle_group(update: Update, context):
     if not content:
         return
 
-    if not is_bot_mentioned(message, BOT_USERNAME):
+    # 1. Список триггеров
+    TRIGGERS = ["инспектор",
+                "шелупонь", "ботик",
+                "бубен", 'андрюха',
+                'андрей', 'малыш',
+                'андрей генадьевич']
+    content_lower = content.lower()
+
+    # Проверяем, есть ли хоть одно слово из списка в сообщении
+    has_trigger_word = any(word in content_lower for word in TRIGGERS)
+
+    # 2. Проверяем @упоминание
+    is_mentioned = is_bot_mentioned(message, BOT_USERNAME)
+
+    # Если нет ни триггера, ни @упоминания — выходим
+    if not (has_trigger_word or is_mentioned):
         return
 
-    entities = []
-    if message.entities:
-        entities.extend(message.entities)
-    if message.caption_entities:
-        entities.extend(message.caption_entities)
-
+    # --- ОЧИСТКА ТЕКСТА ---
     clean_text = content
+
+    # Удаляем @mention (твой оригинальный код)
+    entities = []
+    if message.entities: entities.extend(message.entities)
+    if message.caption_entities: entities.extend(message.caption_entities)
+
     for entity in entities:
         if entity.type == "mention":
             mention = content[entity.offset: entity.offset + entity.length]
             if mention.lower() == f"@{BOT_USERNAME.lower()}":
-                clean_text = clean_text.replace(mention, "", 1).strip()
+                clean_text = clean_text.replace(mention, "", 1)
                 break
 
+    # Удаляем все слова-триггеры из текста, чтобы они не уходили в нейронку
+    for word in TRIGGERS:
+        # Регулярка убирает слово целиком, игнорируя регистр
+        clean_text = re.sub(rf'\b{word}\b', '', clean_text, flags=re.IGNORECASE)
+
+    # Убираем лишние запятые и пробелы, которые часто остаются после обращения
+    clean_text = re.sub(r'^[,\.\s?!\-]+', '', clean_text).strip()
+
+    # --- КОНТЕКСТ РЕПЛАЯ ---
     prompt = ""
     if message.reply_to_message:
         reply = message.reply_to_message
@@ -440,14 +463,13 @@ async def handle_group(update: Update, context):
         if reply_text:
             prompt = f"Контекст (ответ на сообщение): {reply_text}\n\n"
 
-    prompt += clean_text.strip()
+    prompt += clean_text
 
     if not prompt:
-        await message.reply_text("Напиши вопрос после упоминания меня 😏")
+        await message.reply_text("Я тут! Задай свой вопрос после обращения 😏")
         return
 
     await process_llm(update, context, prompt)
-
 
 def main():
     if not BOT_TOKEN:
