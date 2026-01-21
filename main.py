@@ -2,8 +2,10 @@ import os
 import asyncio
 import re
 import time
+
 from collections import defaultdict
 from datetime import datetime
+from faster_whisper import WhisperModel
 
 from dotenv import load_dotenv
 
@@ -71,6 +73,7 @@ openrouter_client = OpenAI(
     api_key=OPEN_ROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1",
 )
+model_whisper = WhisperModel("base", device="cpu", compute_type="int8")
 
 SYSTEM_PROMPT = f'''
 Ты — ИИ помощник. Текущая дата={TO_DAY} 
@@ -527,6 +530,42 @@ async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Если бот не админ, он не сможет удалить сообщение пользователя
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if not message or not message.voice:
+        return
+
+    # Генерируем путь для временного файла
+    file_path = f"voice_{message.voice.file_unique_id}.ogg"
+
+    try:
+        # 1. Скачиваем файл
+        voice_file = await context.bot.get_file(message.voice.file_id)
+        await voice_file.download_to_drive(file_path)
+
+        # 2. Расшифровываем (в отдельном потоке, чтобы не блокировать бота)
+        segments, info = await asyncio.to_thread(model_whisper.transcribe, file_path, beam_size=5)
+
+        # 3. Собираем текст
+        transcribed_text = "".join([segment.text for segment in segments]).strip()
+
+        # 4. Отправляем результат, если текст не пустой
+        if transcribed_text:
+            await message.reply_text(
+                f"<b>Транскрипция:</b>\n\n{transcribed_text}",
+                parse_mode="HTML"
+            )
+        # Если текст пустой, бот просто промолчит или можно добавить логирование в консоль
+
+    except Exception as e:
+        print(f"Ошибка STT: {e}")
+        # В случае ошибки можно отправить скрытое уведомление или просто проигнорировать
+
+    finally:
+        # Чистим за собой файл
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
 def main():
     if not BOT_TOKEN:
         print("Ошибка: Токен Telegram не найден!")
@@ -535,6 +574,11 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(MessageHandler(filters.Entity("url") | filters.Entity("text_link"), link_fixer))
+
+    # 2. Голосовые сообщения
+    # Этот фильтр реагирует на любое голосовое
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("model", show_model_selection))
     app.add_handler(CallbackQueryHandler(callback_handler))
