@@ -420,30 +420,34 @@ async def handle_group(update: Update, context):
     if not content:
         return
 
-    # 1. Список триггеров
+    # --- 1. ПРОВЕРКА: КТО КОГО ПОЗВАЛ ---
+
+    # Проверяем, является ли это ответом на сообщение самого бота
+    is_reply_to_me = False
+    if message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.username == BOT_USERNAME:
+            is_reply_to_me = True
+
+    # Список триггеров
     TRIGGERS = ["инспектор", "шелупонь", "ботик", "бубен",
                 "андрюха", "андрей", "малыш", "андрей генадьевич"]
-    content_lower = content.lower().strip()  # Убираем лишние пробелы в начале/конце
+    content_lower = content.lower().strip()
 
-    # Проверяем, начинается ли сообщение с одного из триггеров
-    # ^ - начало строки, \s* - возможные пробелы, \b - граница слова
+    # Проверяем триггер только В НАЧАЛЕ строки
     has_trigger_word = any(re.search(rf'^\s*\b{re.escape(word)}\b', content_lower) for word in TRIGGERS)
 
-    # 2. Проверяем @упоминание (оно может быть в любом месте)
+    # Проверяем @упоминание
     is_mentioned = is_bot_mentioned(message, BOT_USERNAME)
 
-    # Если бот не упомянут и сообщение НЕ начинается с триггера — игнорируем
-    if not (has_trigger_word or is_mentioned):
+    # УСЛОВИЕ ВХОДА: если это не реплей боту, не триггер в начале и не @упоминание — выходим
+    if not (has_trigger_word or is_mentioned or is_reply_to_me):
         return
 
-    # --- ОЧИСТКА ТЕКСТА ---
+    # --- 2. ОЧИСТКА ТЕКСТА ---
     clean_text = content
 
-    # Удаляем @mention (твой оригинальный код)
-    entities = []
-    if message.entities: entities.extend(message.entities)
-    if message.caption_entities: entities.extend(message.caption_entities)
-
+    # Удаляем @mention бота
+    entities = (message.entities or []) + (message.caption_entities or [])
     for entity in entities:
         if entity.type == "mention":
             mention = content[entity.offset: entity.offset + entity.length]
@@ -451,25 +455,27 @@ async def handle_group(update: Update, context):
                 clean_text = clean_text.replace(mention, "", 1)
                 break
 
-        # Очистка: удаляем триггер только если он в самом начале
-        for word in TRIGGERS:
-            # Убираем слово только если оно первое в строке (с учетом пробелов и знаков препинания после него)
-            clean_text = re.sub(rf'^\s*\b{re.escape(word)}\b[,\.\s\-]*', '', clean_text, flags=re.IGNORECASE, count=1)
+    # Удаляем триггер, только если он в начале строки
+    for word in TRIGGERS:
+        # count=1 гарантирует, что мы удалим только первое слово-обращение
+        clean_text = re.sub(rf'^\s*\b{re.escape(word)}\b[,\.\s\-]*', '', clean_text, flags=re.IGNORECASE, count=1)
 
-    # Убираем лишние запятые и пробелы, которые часто остаются после обращения
+    # Финальная чистка мусора в начале
     clean_text = re.sub(r'^[,\.\s?!\-]+', '', clean_text).strip()
 
-    # --- КОНТЕКСТ РЕПЛАЯ ---
+    # --- 3. ФОРМИРОВАНИЕ ПРОМПТА ---
     prompt = ""
     if message.reply_to_message:
         reply = message.reply_to_message
         reply_text = reply.text or reply.caption or ""
         if reply_text:
+            # Если это реплей, добавляем текст того сообщения для контекста
             prompt = f"Контекст (ответ на сообщение): {reply_text}\n\n"
 
     prompt += clean_text
 
-    if not prompt:
+    # Если после всех чисток текста не осталось, а это не реплей — просим вопрос
+    if not clean_text and not is_reply_to_me:
         await message.reply_text("Я тут! Задай свой вопрос после обращения 😏")
         return
 
