@@ -9,7 +9,7 @@ from faster_whisper import WhisperModel
 
 from dotenv import load_dotenv
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -421,20 +421,18 @@ async def handle_group(update: Update, context):
         return
 
     # 1. Список триггеров
-    TRIGGERS = ["инспектор",
-                "шелупонь", "ботик",
-                "бубен", 'андрюха',
-                'андрей', 'малыш',
-                'андрей генадьевич']
-    content_lower = content.lower()
+    TRIGGERS = ["инспектор", "шелупонь", "ботик", "бубен",
+                "андрюха", "андрей", "малыш", "андрей генадьевич"]
+    content_lower = content.lower().strip()  # Убираем лишние пробелы в начале/конце
 
-    # Проверяем, есть ли хоть одно слово из списка в сообщении
-    has_trigger_word = any(word in content_lower for word in TRIGGERS)
+    # Проверяем, начинается ли сообщение с одного из триггеров
+    # ^ - начало строки, \s* - возможные пробелы, \b - граница слова
+    has_trigger_word = any(re.search(rf'^\s*\b{re.escape(word)}\b', content_lower) for word in TRIGGERS)
 
-    # 2. Проверяем @упоминание
+    # 2. Проверяем @упоминание (оно может быть в любом месте)
     is_mentioned = is_bot_mentioned(message, BOT_USERNAME)
 
-    # Если нет ни триггера, ни @упоминания — выходим
+    # Если бот не упомянут и сообщение НЕ начинается с триггера — игнорируем
     if not (has_trigger_word or is_mentioned):
         return
 
@@ -453,10 +451,10 @@ async def handle_group(update: Update, context):
                 clean_text = clean_text.replace(mention, "", 1)
                 break
 
-    # Удаляем все слова-триггеры из текста, чтобы они не уходили в нейронку
-    for word in TRIGGERS:
-        # Регулярка убирает слово целиком, игнорируя регистр
-        clean_text = re.sub(rf'\b{word}\b', '', clean_text, flags=re.IGNORECASE)
+        # Очистка: удаляем триггер только если он в самом начале
+        for word in TRIGGERS:
+            # Убираем слово только если оно первое в строке (с учетом пробелов и знаков препинания после него)
+            clean_text = re.sub(rf'^\s*\b{re.escape(word)}\b[,\.\s\-]*', '', clean_text, flags=re.IGNORECASE, count=1)
 
     # Убираем лишние запятые и пробелы, которые часто остаются после обращения
     clean_text = re.sub(r'^[,\.\s?!\-]+', '', clean_text).strip()
@@ -481,53 +479,67 @@ async def handle_group(update: Update, context):
 
 async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
-    # Проверяем наличие сообщения и текста
     if not message or not message.text:
         return
 
     text = message.text
-    # Сохраняем ID топика, чтобы ответить в нужную тему
     thread_id = message.message_thread_id
 
-    # Твои паттерны замен
+    # Список только тех сервисов, которые мы ПРАВИМ
     replacements = {
         r"(https?://)(www\.)?instagram\.com/": r"\1kkinstagram.com/",
-        r"(https?://)((vm|vt|www)\.)?tiktok\.com/": r"\1tnktok.com/",
+        r"(https?://)((vm|vt|www)\.)?tiktok\.com/": r"\1vxtiktok.com/",
         r"(https?://)(www\.)?twitter\.com/": r"\1fxtwitter.com/",
         r"(https?://)(www\.)?x\.com/": r"\1fxtwitter.com/",
-        r"(https?://)(www\.)?youtube\.com/shorts/": r"\1youtube.com/watch?v=",
     }
 
     new_text = text
     found = False
+    target_url = None
 
+    # Проверяем, есть ли в сообщении хотя бы одна ссылка из нашего списка
     for pattern, replacement in replacements.items():
-        if re.search(pattern, new_text):
+        match = re.search(pattern, text)
+        if match:
+            # Если нашли — заменяем и помечаем, что сообщение нужно переотправить
             new_text = re.sub(pattern, replacement, new_text)
             found = True
+            # Запоминаем исправленную ссылку для "хитрости" с превью
+            if not target_url:
+                url_match = re.search(r"https?://\S+", new_text)
+                if url_match:
+                    target_url = url_match.group(0)
 
-    if found:
-        # Паузу (sleep) тоже лучше убрать или сократить, раз нет статус-сообщения,
-        # чтобы бот реагировал мгновенно.
+    # Если это была обычная ссылка (не из списка), функция просто завершится здесь
+    if not found:
+        return
 
-        user_name = message.from_user.first_name
-        final_caption = f"✅ <b>От {user_name}:</b>\n{new_text}"
+    user_name = message.from_user.first_name
 
-        # Отправляем финальную ссылку сразу
-        await context.bot.send_message(
-            chat_id=message.chat_id,
-            text=final_caption,
-            parse_mode="HTML",
-            disable_web_page_preview=False,
-            message_thread_id=thread_id  # <--- Теперь ссылка всегда в нужном топике
+    # Формируем скрытую ссылку для форсирования превью
+    hidden_link = f'<a href="{target_url}">\u200b</a>' if target_url else ""
+    final_caption = f"{hidden_link}✅ <b>От {user_name}:</b>\n{new_text}"
+
+    # Удаляем старое
+    try:
+        await message.delete()
+    except:
+        pass
+
+    # Ждем, чтобы Telegram "протрезвел" и был готов загрузить новое видео
+    await asyncio.sleep(1.2)
+
+    await context.bot.send_message(
+        chat_id=message.chat_id,
+        text=final_caption,
+        parse_mode="HTML",
+        message_thread_id=thread_id,
+        link_preview_options=LinkPreviewOptions(
+            is_disabled=False,
+            prefer_large_media=True,
+            show_above_text=False
         )
-
-        # Удаляем только сообщение отправителя с "кривой" ссылкой
-        try:
-            await message.delete()
-        except Exception as e:
-            print(f"Ошибка при удалении сообщения: {e}")
-
+    )
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
