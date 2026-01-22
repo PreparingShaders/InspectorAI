@@ -193,7 +193,7 @@ async def callback_handler(update: Update, context):
     else:
         await query.edit_message_text("Не  удалось выбрать модель")
 
-async def process_llm(update: Update, context, final_query: str):
+async def process_llm(update: Update, context, final_query: str, thread_id=None):
     if not final_query.strip():
         return
 
@@ -205,13 +205,14 @@ async def process_llm(update: Update, context, final_query: str):
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
     chat_histories[chat_id] = history[-4:]
 
-    if update.effective_chat.type in ("group", "supergroup"):
-        await asyncio.sleep(1.2)   # 1.0–1.8 сек обычно хватает
+    if thread_id is None and update.effective_message:
+        thread_id = update.effective_message.message_thread_id
 
     status_msg = await context.bot.send_message(
         chat_id=chat_id,
         text="⚡ Запускаю модели...",
-        reply_to_message_id=reply_to_message_id
+        reply_to_message_id=reply_to_message_id,
+        message_thread_id=thread_id
     )
     status_id = status_msg.message_id
 
@@ -474,7 +475,8 @@ async def handle_group(update: Update, context):
         await message.reply_text("Я тут! Задай свой вопрос после обращения 😏")
         return
 
-    await process_llm(update, context, prompt)
+    thread_id = message.message_thread_id
+    await process_llm(update, context, prompt, thread_id=thread_id)
 
 
 async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -484,11 +486,12 @@ async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = message.text
+    # Сохраняем ID топика, чтобы ответить в нужную тему
+    thread_id = message.message_thread_id
 
     # Твои паттерны замен
     replacements = {
         r"(https?://)(www\.)?instagram\.com/": r"\1kkinstagram.com/",
-        # Используем tnktok.com — он сейчас стабильнее для vt. ссылок
         r"(https?://)((vm|vt|www)\.)?tiktok\.com/": r"\1tnktok.com/",
         r"(https?://)(www\.)?twitter\.com/": r"\1fxtwitter.com/",
         r"(https?://)(www\.)?x\.com/": r"\1fxtwitter.com/",
@@ -504,30 +507,26 @@ async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
             found = True
 
     if found:
-        # 1. Пишем промежуточное сообщение
-        status_msg = await message.reply_text("🔍 Вижу ссылку для редактирования...правим эту хохму 🛠")
+        # Паузу (sleep) тоже лучше убрать или сократить, раз нет статус-сообщения,
+        # чтобы бот реагировал мгновенно.
 
-        # 2. Ждем 1-3 секунды для "эффекта работы"
-        await asyncio.sleep(2.5)
-
-        # 3. Отправляем финальную ссылку
         user_name = message.from_user.first_name
-        final_caption = f"✅ <b>Ссылка готова (от {user_name}):</b>\n\n{new_text}"
+        final_caption = f"✅ <b>От {user_name}:</b>\n{new_text}"
 
+        # Отправляем финальную ссылку сразу
         await context.bot.send_message(
             chat_id=message.chat_id,
             text=final_caption,
             parse_mode="HTML",
-            disable_web_page_preview=False  # Оставляем превью для видео
+            disable_web_page_preview=False,
+            message_thread_id=thread_id  # <--- Теперь ссылка всегда в нужном топике
         )
 
-        # 4. Удаляем сообщение отправителя и статусное сообщение
+        # Удаляем только сообщение отправителя с "кривой" ссылкой
         try:
-            await message.delete()  # Удаляем оригинал с кривой ссылкой
-            await status_msg.delete()  # Удаляем текст "начинаю операцию"
+            await message.delete()
         except Exception as e:
-            print(f"Ошибка при удалении сообщений: {e}")
-            # Если бот не админ, он не сможет удалить сообщение пользователя
+            print(f"Ошибка при удалении сообщения: {e}")
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
