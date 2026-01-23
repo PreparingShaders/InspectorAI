@@ -76,11 +76,11 @@ openrouter_client = OpenAI(
 model_whisper = WhisperModel("base", device="cpu", compute_type="int8")
 
 SYSTEM_PROMPT = f'''
-Ты — ИИ помощник. Текущая дата={TO_DAY} 
-1. Точная информация + фактчекинг.Проверка новостей на текущую дату.Укажи на сколько % это правда.
-2. Дефолтный ответ 250 зн, если просят развернутый или подробный игнорируй ограничение.
+Ты — ИИ помощник.Текущая дата={TO_DAY} 
+1. Точная информация + фактчекинг.Проверка новостей на {TO_DAY}.Укажи на сколько % это правда.
+2. Стандартный ответ 200 зн, если просят развернутый или подробный игнорируй ограничение.
 3. Если требуется, можешь просматривать статьи в интернете и искать факты.
-4. Уместный юмор 7 из 10, подколы разрешены.
+4. Уместный тонкий английский юмор 8 из 10, подколы разрешены.
 5. Только русский язык.Форматируй под Telegram.
 '''
 
@@ -394,9 +394,9 @@ async def handle_private(update: Update, context):
     if not message:
         return
 
-    text = (message.text or message.caption or "").strip()
-
+    # 1. Проверка авторизации
     if user_id not in authorized_users:
+        text = (message.text or "").strip()
         if text.lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
             await message.reply_text("Авторизация пройдена! 🎉\nТеперь можешь задавать вопросы.\n\n/model — выбор модели")
@@ -404,12 +404,18 @@ async def handle_private(update: Update, context):
             await message.reply_text("Неправильный пароль 😕\nИспользуй /start")
         return
 
-    if not text:
-        await message.reply_text("Напиши что-нибудь текстом или в подписи к фото 😏")
+    # 2. Извлечение текста (из сообщения, подписи к фото/видео или пересланного поста)
+    # Если это пересланный пост, текст будет в message.text или message.caption
+    query_text = message.text or message.caption or ""
+
+    if not query_text.strip():
+        # Если текста нет, но есть, например, стикер или просто файл без описания
+        await message.reply_text("Я вижу сообщение, но не вижу в нём текста для анализа. Напиши что-нибудь или добавь описание к файлу 😏")
         return
 
-    await process_llm(update, context, text)
-
+    # 3. Отправка в LLM
+    # В личке нам не нужны триггеры, отвечаем на всё сразу
+    await process_llm(update, context, query_text)
 
 async def handle_group(update: Update, context):
     message = update.message
@@ -547,6 +553,8 @@ async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     )
 
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.voice:
@@ -583,6 +591,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(file_path):
             os.remove(file_path)
 
+
 def main():
     if not BOT_TOKEN:
         print("Ошибка: Токен Telegram не найден!")
@@ -590,15 +599,19 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(MessageHandler(filters.Entity("url") | filters.Entity("text_link"), link_fixer))
+    # --- ГРУППА -1 (Обработка ссылок) ---
+    # Мы добавляем параметр group=-1. Бот сначала зайдет сюда.
+    app.add_handler(MessageHandler(
+        (filters.Entity("url") | filters.Entity("text_link")) & ~filters.COMMAND,
+        link_fixer
+    ), group=-1)
 
-    # 2. Голосовые сообщения
-    # Этот фильтр реагирует на любое голосовое
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-
+    # --- ГРУППА 0 (Основная логика) ---
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("model", show_model_selection))
     app.add_handler(CallbackQueryHandler(callback_handler))
+
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     message_filter = filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL
 
