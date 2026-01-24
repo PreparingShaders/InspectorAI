@@ -2,6 +2,7 @@ import os
 import asyncio
 import re
 import time
+import requests
 
 from collections import defaultdict
 from datetime import datetime
@@ -33,6 +34,9 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@").lower()
 CORRECT_PASSWORD = os.getenv("Password")
 OPEN_ROUTER_API_KEY = os.getenv("OPEN_ROUTER_API_KEY")
 TO_DAY = datetime.now().isoformat()
+WORKER_URL = "https://inspectorgpt.classname1984.workers.dev"
+BLACKLISTED_MODELS = set()      # Сюда будем временно вносить "упавшие" модели
+current_free_or_models = []     # Тут будет лежать актуальный список ID
 
 GEMINI_MODELS = [
     "models/gemini-2.5-flash",        # Стабильная, мощная, основной выбор
@@ -53,9 +57,77 @@ OPENROUTER_MODELS = [
     'qwen/qwen3-next-80b-a3b-instruct:free',
 ]
 
-# Сопоставление коротких кодов → полные имена моделей
+# 2. Теперь сама функция (она теперь видит BLACKLISTED_MODELS)
+def fetch_free_openrouter_models():
+    """Запрашивает список, фильтрует бесплатные и сортирует по контексту"""
+    url = f"{WORKER_URL}/v1/models"
+    headers = {"Authorization": f"Bearer {OPEN_ROUTER_API_KEY}"}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            try:
+                data = response.json().get('data', [])
+            except ValueError:
+                print("⚠️ Ошибка: API вернул не JSON")
+                return None
+
+            free_models_data = []
+            for m in data:
+                m_id = m['id']
+                pricing = m.get('pricing', {})
+                # Берем контекст, если его нет — ставим 0
+                context_length = int(m.get('context_length', 0))
+
+                # Проверка на бесплатность (цена 0 или тег :free)
+                is_free = (":free" in m_id) or (
+                        float(pricing.get('prompt', 1)) == 0 and
+                        float(pricing.get('completion', 1)) == 0
+                )
+
+                # ВОТ ТУТ ОНА ИСПОЛЬЗУЕТ СПИСОК
+                if is_free and m_id not in BLACKLISTED_MODELS:
+                    free_models_data.append({
+                        'id': m_id,
+                        'context': context_length
+                    })
+
+            # Сортировка: сначала большой контекст, потом по алфавиту
+            sorted_models = sorted(
+                free_models_data,
+                key=lambda x: (-x['context'], x['id'])
+            )
+
+            return [m['id'] for m in sorted_models]
+
+    except Exception as e:
+        print(f"⚠️ Ошибка при запросе моделей: {e}")
+    return None
+
+# Изначально заполняем из твоего списка
+# (если API не ответит, бот не останется с пустым меню)
+current_free_or_models = OPENROUTER_MODELS.copy()
+
+
+def update_model_mappings():
+    global OPENROUTER_MODEL_BY_ID, current_free_or_models, BLACKLISTED_MODELS
+
+    # ПЕРЕД обновлением очищаем блэклист, чтобы дать моделям "второй шанс"
+    BLACKLISTED_MODELS.clear()
+
+    new_models = fetch_free_openrouter_models()
+    if new_models:
+        current_free_or_models = new_models
+
+    OPENROUTER_MODEL_BY_ID.clear()
+    for i, path in enumerate(current_free_or_models):
+        OPENROUTER_MODEL_BY_ID[str(i + 100)] = path
+    print(f"🔄 Списки моделей обновлены. Дали второй шанс всем упавшим моделям.")
+
+# Первичная инициализация словарей
 GEMINI_MODEL_BY_ID = {str(i): path for i, path in enumerate(GEMINI_MODELS)}
-OPENROUTER_MODEL_BY_ID = {str(i + 100): path for i, path in enumerate(OPENROUTER_MODELS)}
+OPENROUTER_MODEL_BY_ID = {}
+
+update_model_mappings()
 
 # ─── Хранение состояний ─────────────────────────────────────────────────────
 chat_histories = defaultdict(list)
@@ -63,22 +135,29 @@ authorized_users = set()
 user_selected_model = defaultdict(lambda: None)          # полное имя модели или None
 user_selected_provider = defaultdict(lambda: "gemini")   # "gemini" или "openrouter"
 
-# ─── Клиенты ────────────────────────────────────────────────────────────────
-gemini_client = genai.Client(
-    api_key=GEMINI_API_KEY,
-    http_options=types.HttpOptions(base_url="https://inspectorgpt.classname1984.workers.dev"),
+# 1. Клиент для OpenRouter
+# Берем РЕАЛЬНЫЙ ключ из .env через os.getenv
+or_client = OpenAI(
+    api_key=os.getenv("OPEN_ROUTER_API_KEY"), # Без кавычек!
+    base_url=f"{WORKER_URL}/v1",
+    timeout=45.0
 )
 
-openrouter_client = OpenAI(
-    api_key=OPEN_ROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
+# 2. Клиент для Gemini
+# Берем РЕАЛЬНЫЙ ключ из .env через os.getenv
+gemini_client = genai.Client(
+    api_key=os.getenv("GEMINI_API_KEY"), # Без кавычек!
+    http_options=types.HttpOptions(base_url=WORKER_URL,
+                                   timeout=45000),
 )
+
 model_whisper = WhisperModel("base", device="cpu", compute_type="int8")
 
+
 SYSTEM_PROMPT = f'''
-Ты — ИИ помощник.Текущая дата={TO_DAY} 
+Ты — ИИ помощник.Текущая дата={TO_DAY}.Старайся ответить коротко. 
 1. Точная информация + фактчекинг.Проверка новостей на {TO_DAY}.Укажи на сколько % это правда.
-2. Стандартный ответ 200 зн, если просят развернутый или подробный игнорируй ограничение.
+2. Стандартный ответ 100 зн, если просят развернутый или подробный игнорируй ограничение.
 3. Если требуется, можешь просматривать статьи в интернете и искать факты.
 4. Уместный тонкий английский юмор 8 из 10, подколы разрешены.
 5. Только русский язык.Форматируй под Telegram.
@@ -120,41 +199,60 @@ def get_model_short_name(model_path: str, provider: str) -> str:
 
 async def show_model_selection(update: Update, context):
     """Показать меню выбора модели"""
+    # 1. Обновляем маппинги (список моделей)
+    update_model_mappings()
+
+    # 2. Получаем ID пользователя (универсально для команд и кнопок)
     user_id = update.effective_user.id
     keyboard = []
 
-    keyboard.append([InlineKeyboardButton("Gemini:", callback_data="dummy")])
+    # --- Секция Gemini ---
+    keyboard.append([InlineKeyboardButton("✨ Gemini Models:", callback_data="dummy")])
     for i, model in enumerate(GEMINI_MODELS):
         name = get_model_short_name(model, "gemini")
         prefix = "✅ " if user_selected_model[user_id] == model else ""
-        keyboard.append([
-            InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:g:{i}")
-        ])
+        keyboard.append([InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:g:{i}")])
 
     keyboard.append([InlineKeyboardButton("──────────────", callback_data="dummy")])
 
-    keyboard.append([InlineKeyboardButton("OpenRouter:", callback_data="dummy")])
-    for i, model in enumerate(OPENROUTER_MODELS):
+    # --- Секция OpenRouter (динамическая) ---
+    keyboard.append([InlineKeyboardButton("🎁 OpenRouter FREE:", callback_data="dummy")])
+    for i, model in enumerate(current_free_or_models):
         name = get_model_short_name(model, "openrouter")
         prefix = "✅ " if user_selected_model[user_id] == model else ""
         keyboard.append([
-            InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:o:{i+100}")
+            InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:o:{i + 100}")
         ])
 
-    keyboard.append([
-        InlineKeyboardButton("Автоматический выбор", callback_data="sel:auto")
-    ])
+    keyboard.append([InlineKeyboardButton("🤖 Автоматический выбор", callback_data="sel:auto")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выбери модель:", reply_markup=reply_markup)
 
-
+    # --- УНИВЕРСАЛЬНАЯ ОТПРАВКА ---
+    # effective_message сам определит, откуда отвечать (на сообщение или на кнопку)
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "Выбери модель из актуального списка:",
+            reply_markup=reply_markup
+        )
+    else:
+        # Резервный вариант через прямой вызов метода бота
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Выбери модель из актуального списка:",
+            reply_markup=reply_markup
+        )
 async def callback_handler(update: Update, context):
     query = update.callback_query
     await query.answer()
 
     data = query.data
     user_id = query.from_user.id
+
+    if data == "open_menu":
+        # Передаем update целиком, а не query
+        await show_model_selection(update, context)
+        return
 
     if data == "dummy":
         return
@@ -251,7 +349,7 @@ async def process_llm(update: Update, context, final_query: str, thread_id=None)
                     content = msg.parts[0].text if msg.parts else ""
                     messages.append({"role": role, "content": content})
 
-                response = openrouter_client.chat.completions.create(
+                response = or_client.chat.completions.create(
                     model=selected_model,
                     messages=messages,
                     temperature=0.75,
@@ -262,25 +360,18 @@ async def process_llm(update: Update, context, final_query: str, thread_id=None)
                     used_provider = "OpenRouter"
                     used_model_path = selected_model
 
-
-        except Exception:
+        except Exception as e:
             model_name = get_model_short_name(selected_model, selected_provider)
-            prov = selected_provider.upper()
+            # Создаем кнопку, которая просто вызовет меню моделей
+            keyboard = [[InlineKeyboardButton("🔄 Выбрать другую модель", callback_data="open_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=status_id,
-                text=(
-                    f"❌ Модель недоступна: {prov} → {model_name}\n\n"
-                    "Выбери другую модель:\n"
-                    "→ команда /model"
-                )
+                text=f"❌ Модель {model_name} сейчас недоступна.\nПопробуй выбрать другую из списка ниже:",
+                reply_markup=reply_markup
             )
-            await asyncio.sleep(3)
-            try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=status_id)
-            except Exception:
-                pass
-            return  # ← очень важно! Прерываем функцию
+            return  # Прерываем, сообщение НЕ удаляем
 
     # 2. Обычный перебор, если ничего не получилось
     if reply_text is None:
@@ -313,13 +404,13 @@ async def process_llm(update: Update, context, final_query: str, thread_id=None)
                 content = msg.parts[0].text if msg.parts else ""
                 messages.append({"role": role, "content": content})
 
-            for model_path in OPENROUTER_MODELS:
+            for model_path in current_free_or_models:
                 try:
                     await context.bot.edit_message_text(
                         chat_id=chat_id, message_id=status_id,
                         text=f"🔄 OR: {model_path.split('/')[-1].split(':')[0]}..."
                     )
-                    response = openrouter_client.chat.completions.create(
+                    response = or_client.chat.completions.create(
                         model=model_path,
                         messages=messages,
                         temperature=0.75,
@@ -347,7 +438,6 @@ async def process_llm(update: Update, context, final_query: str, thread_id=None)
     model_short = used_model_path.split("/")[-1].split(":")[0]
     full_reply = f"<b>{used_provider}: {model_short}</b>\n\n{format_to_html(reply_text)}"
 
-    # Отправка (твой оригинальный код обработки длинных сообщений можно вставить сюда)
     MAX_LEN = 4000
     if len(full_reply) <= MAX_LEN:
         try:
@@ -355,14 +445,18 @@ async def process_llm(update: Update, context, final_query: str, thread_id=None)
                 chat_id=chat_id,
                 message_id=status_id,
                 text=full_reply,
-                parse_mode="HTML",
+                parse_mode="HTML",  # Пытаемся отправить красиво
                 disable_web_page_preview=True
             )
-        except:
+        except Exception as e:
+            print(f"⚠️ Ошибка HTML: {e}")
+            # Если не вышло (кривые теги), отправляем чистый текст
+            # Strip tags - удаляем теги, чтобы не было мусора <b>
+            clean_reply = re.sub(r'<[^>]+>', '', full_reply)
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=status_id,
-                text=full_reply,
+                text=clean_reply,  # Отправляем без HTML
                 parse_mode=None
             )
     else:
