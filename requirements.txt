@@ -5,3 +5,4 @@ google-genai
 openai
 asyncio
 faster-whisper
+ddgs
