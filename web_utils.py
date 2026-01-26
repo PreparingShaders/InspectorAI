@@ -1,5 +1,4 @@
-import html
-import asyncio
+#web_utils
 from ddgs import DDGS
 
 TRUSTED_SITES = [
@@ -8,44 +7,47 @@ TRUSTED_SITES = [
     "bbc.com/russian", "meduza.io", "vedomosti.ru", "ru.wikipedia.org"
 ]
 
+
 async def get_web_context(query: str, period='w'):
     try:
         with DDGS() as ddgs:
-            clean_query = query.replace('"', '').strip()
+            # 1. Сначала чистим запрос отдельно
+            clean_q = query.replace('"', '').replace("'", "").strip()
 
-            # Делаем один широкий поиск по всем доверенным сразу (срез до 12)
-            sites_filter = " OR ".join([f"site:{s}" for s in TRUSTED_SITES[:12]])
-            full_query = f"{clean_query[:80]} ({sites_filter})"
+            # 2. Формируем строку без сложной вложенности кавычек
+            # Используем двойные кавычки снаружи, чтобы внутри спокойно писать текст
+            refined_query = f'"{clean_q[:120]}" (фактчек OR проверка OR подробности OR разоблачение)'
 
-            results = ddgs.text(full_query, region='ru-ru', timelimit=period, max_results=10)
+            # 3. Поиск
+            results = list(ddgs.text(refined_query, region='ru-ru', timelimit=period, max_results=8))
 
             if not results:
-                # Если в белом списке пусто, ищем везде
-                results = ddgs.text(clean_query[:150], region='ru-ru', max_results=5)
+                results = list(ddgs.text(clean_q[:100], region='ru-ru', max_results=5))
 
-            if not results: return None
+            if not results:
+                return None
 
-            # --- ЛОГИКА РЕЙТИНГА ---
+            # --- Дальше твоя логика обработки результатов ---
             found_on_sites = set()
             context_parts = []
 
             for r in results:
                 href = r.get('href', '').lower()
-                for site in TRUSTED_SITES[:12]:
+                # snippet может прийти в body или snippet
+                snippet = r.get('body') or r.get('snippet') or ''
+                title = r.get('title', '')
+
+                for site in TRUSTED_SITES:
                     if site in href:
                         found_on_sites.add(site)
 
-                context_parts.append(f"ИСТОЧНИК: {r.get('title')}\nURL: {href}")
+                context_parts.append(f"Заголовок: {title}\nСуть: {snippet}\nИсточник: {href}")
 
-            # Формируем отчет для нейронки
-            report = "ОТЧЕТ ПО МОНИТОРИНГУ СМИ:\n"
-            for site in TRUSTED_SITES[:12]:
-                status = "✅ ЕСТЬ ПУБЛИКАЦИЯ" if site in found_on_sites else "❌ НЕТ ДАННЫХ"
-                report += f"- {site}: {status}\n"
-
-            report += "\nДЕТАЛИ:\n" + "\n".join(context_parts[:5])
+            trusted_report = ", ".join(found_on_sites) or "Доверенных источников не найдено"
+            report = f"РЕЗУЛЬТАТЫ ПОИСКА ПО СМИ:\nУпомянуто в доверенных: {trusted_report}\n\nДАННЫЕ:\n" + "\n---\n".join(
+                context_parts)
             return report
 
     except Exception as e:
-        print(f"🌐 Ошибка: {e}")
+        print(f"🌐 Ошибка в get_web_context: {e}")
         return None
