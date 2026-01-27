@@ -40,105 +40,56 @@ WORKER_URL = "https://inspectorgpt.classname1984.workers.dev"
 BLACKLISTED_MODELS = set()      # Сюда будем временно вносить "упавшие" модели
 current_free_or_models = []     # Тут будет лежать актуальный список ID
 
-GEMINI_MODELS = [
-    "models/gemini-2.5-flash",        # Стабильная, мощная, основной выбор
-    "models/gemini-2.5-flash-lite",   # Быстрая, высокие лимиты, дешевле
-    "models/gemini-3-flash-preview",  # Новинка, может иметь жесткие лимиты (20 зап/день)
-    "models/gemini-2.0-flash",        # Предыдущее поколение (если еще доступно)
-]
-
+# 1. OpenRouter: От быстрых/легких к умным/тяжелым
 OPENROUTER_MODELS = [
-    "xiaomi/mimo-v2-flash:free",
-    "allenai/molmo-2-8b:free",
-    "google/gemma-3-27b-it:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
-    "mistralai/devstral-2512:free",
-    "tngtech/deepseek-r1t2-chimera:free",
-    'liquid/lfm-2.5-1.2b-thinking:free',
-    'qwen/qwen3-next-80b-a3b-instruct:free',
+    # --- СКОРОСТЬ И ОТКЛИК (Fast & Lite) ---
+    "nvidia/nemotron-3-nano-30b-a3b:free",   # Лидер по скорости, идеален для мелких просьб
+    "arcee-ai/trinity-mini:free",            # Очень быстрая "малютка"
+    "mistralai/devstral-2512:free",          # Оптимизированная скорость от Mistral
+    "z-ai/glm-4.5-air:free",                 # Сбалансированная "воздушная" модель
+
+    # --- СРЕДНИЙ КЛАСС (General Purpose) ---
+    "google/gemma-3-27b-it:free",            # Хороший баланс интеллекта и скорости
+    "meta-llama/llama-3.3-70b-instruct:free", # Золотой стандарт качества для общего чата
+    'google/gemini-2.0-flash-exp:free',
+
+    # --- УМНЫЕ И ТЯЖЕЛЫЕ (Reasoning / Heavy) ---
+    "deepseek/deepseek-r1-0528:free",        # Чистый DeepSeek R1 (высокий интеллект)
+    "tngtech/tng-r1t-chimera:free",          # "Химера" на базе R1, мощная логика
+    "tngtech/deepseek-r1t-chimera:free",     # Вариант с упором на рассуждения
+    "tngtech/deepseek-r1t2-chimera:free",    # Самая свежая и тяжелая итерация "Химеры"
 ]
 
-# 2. Теперь сама функция (она теперь видит BLACKLISTED_MODELS)
-import re
+# 2. Google Gemini: Ставим в самый конец, как ты и просил
+GEMINI_MODELS = [
+    "models/gemini-2.0-flash",               # Самая быстрая из гугловских
+    "models/gemini-2.5-flash-lite",          # Облегченная версия
+    "models/gemini-2.5-flash",               # Стабильный флагман
+    "models/gemini-3-flash-preview",         # Новинка (может быть медленнее из-за лимитов)
+]
 
-import re
-
-
-def fetch_free_openrouter_models():
-    """Динамическая сортировка: сначала самые 'умные' (B), затем контекст"""
-    url = "https://openrouter.ai/api/v1/models"
-
-    try:
-        headers = {"Authorization": f"Bearer {OPEN_ROUTER_API_KEY}"}
-        response = requests.get(url, headers=headers, timeout=10)
-
-        if response.status_code == 200:
-            all_models = response.json().get('data', [])
-            processed_models = []
-
-            for m in all_models:
-                m_id = m.get('id', '')
-                if ":free" in m_id and m_id not in BLACKLISTED_MODELS:
-                    description = m.get('description', '')
-
-                    # 1. Ищем параметры: число + B (например, 141B или 93,8B)
-                    # Учитываем и точку, и запятую в числах
-                    size_match = re.search(r'(\d+[.,]?\d*)\s*[Bb]', description)
-
-                    if size_match:
-                        # Заменяем запятую на точку для float
-                        val_str = size_match.group(1).replace(',', '.')
-                        size_val = float(val_str)
-                    else:
-                        size_val = 0.0
-
-                    processed_models.append({
-                        'id': m_id,
-                        'size': size_val,
-                        'context': int(m.get('context_length', 0))
-                    })
-
-            # 2. ГЛАВНАЯ СОРТИРОВКА:
-            # Сначала по размеру 'мозга' (size),
-            # и только если размеры равны — по длине контекста.
-            sorted_models = sorted(
-                processed_models,
-                key=lambda x: (-x['size'], -x['context'])
-            )
-
-            result = [m['id'] for m in sorted_models[:15]]
-            print(f"🧬 Отсортировано по весу знаний. Топ: {result[0] if result else 'пусто'}")
-            print(result)
-            return result
-
-    except Exception as e:
-        print(f"⚠️ Ошибка сортировки по параметрам: {e}")
-    return None
-# Изначально заполняем из твоего списка
-# (если API не ответит, бот не останется с пустым меню)
+# Копируем в актуальный список
 current_free_or_models = OPENROUTER_MODELS.copy()
 
 
 def update_model_mappings():
-    global OPENROUTER_MODEL_BY_ID, current_free_or_models, BLACKLISTED_MODELS
+    global OPENROUTER_MODEL_BY_ID, GEMINI_MODEL_BY_ID
 
-    # ПЕРЕД обновлением очищаем блэклист, чтобы дать моделям "второй шанс"
-    BLACKLISTED_MODELS.clear()
+    # Маппинг для Gemini (ID от 0 до 99)
+    GEMINI_MODEL_BY_ID.clear()
+    for i, path in enumerate(GEMINI_MODELS):
+        GEMINI_MODEL_BY_ID[str(i)] = path
 
-    new_models = fetch_free_openrouter_models()
-    if new_models:
-        current_free_or_models = new_models
-
+    # Маппинг для OpenRouter (ID от 100 и далее)
     OPENROUTER_MODEL_BY_ID.clear()
     for i, path in enumerate(current_free_or_models):
         OPENROUTER_MODEL_BY_ID[str(i + 100)] = path
-    print(f"🔄 Списки моделей обновлены. Дали второй шанс всем упавшим моделям.")
 
-# Первичная инициализация словарей
-GEMINI_MODEL_BY_ID = {str(i): path for i, path in enumerate(GEMINI_MODELS)}
+    print("🔄 Списки моделей зафиксированы согласно приоритетам скорости.")
+
+# Вызываем один раз при старте
+GEMINI_MODEL_BY_ID = {}
 OPENROUTER_MODEL_BY_ID = {}
-
 update_model_mappings()
 
 # ─── Хранение состояний ─────────────────────────────────────────────────────
@@ -165,15 +116,31 @@ gemini_client = genai.Client(
 
 model_whisper = WhisperModel("base", device="cpu", compute_type="int8")
 
-
 SYSTEM_PROMPT = f'''
-Ты — ИИ помощник.Текущая дата={TO_DAY}.Старайся ответить коротко. 
-1. Точная информация + фактчекинг.Проверка новостей на {TO_DAY}.Укажи на сколько % это правда.
-2. Стандартный ответ 100 зн, если просят развернутый или подробный игнорируй ограничение.
-3. Если требуется, можешь просматривать статьи в интернете и искать факты.
-4. Уместный тонкий английский юмор 8 из 10, подколы разрешены.
-5. Только русский язык.Форматируй под Telegram.
+Ты — InspectorGPT. Текущая дата: {TO_DAY}. 
+Твой стиль: лаконичность, тонкий английский юмор и беспристрастность.
+
+### ТВОИ РОЛИ:
+
+1. ПОМОЩНИК (Обычный чат):
+- Твоя цель — подробно и ясно помочь разобраться в вопросе.
+- Не читай нотаций, отвечай по делу, предоставляя всю необходимую информацию.
+- Используй иронию, если вопрос того требует.
+
+2. ИНСПЕКТОР (Режим проверки фактов):
+- Ты — аналитик-криминалист. Ты не веришь на слово.
+- Твоя задача: противопоставить факты из интернета друг другу.
+- Ищи логические дыры и манипуляции. Не принимай ничью сторону.
+- Итог: подробный разбор + вердикт с точностью в % правды.
+- Структурируй ответ списками или абзацами, без таблиц.
+
+### ПРАВИЛА ОФОРМЛЕНИЯ:
+- Только русский язык.
+- Используй только эти HTML-теги: <b>жирный</b>, <i>курсив</i>, <code>код</code>, <pre>pre</pre>.
+- Не используй <table>, <tr>, <td> или любые другие теги.
+- ВАЖНО: Всегда закрывай теги!
 '''
+
 
 AUTH_QUESTION = "Тут у нас пароль. Нужно отгадать загадку. Скажи, за какое время разгоняется нива до 100 км/ч"
 
@@ -210,98 +177,51 @@ def get_model_short_name(model_path: str, provider: str) -> str:
 
 
 async def show_model_selection(update: Update, context):
-    """Показать меню выбора модели"""
-    # 1. Обновляем маппинги (список моделей)
     update_model_mappings()
-
-    # 2. Получаем ID пользователя (универсально для команд и кнопок)
     user_id = update.effective_user.id
     keyboard = []
 
-    # --- Секция Gemini ---
-    keyboard.append([InlineKeyboardButton("✨ Gemini Models:", callback_data="dummy")])
-    for i, model in enumerate(GEMINI_MODELS):
-        name = get_model_short_name(model, "gemini")
-        prefix = "✅ " if user_selected_model[user_id] == model else ""
-        keyboard.append([InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:g:{i}")])
+    # --- Секция OpenRouter ---
+    keyboard.append([InlineKeyboardButton("🎁 OpenRouter (Приоритет):", callback_data="dummy")])
 
-    keyboard.append([InlineKeyboardButton("──────────────", callback_data="dummy")])
-
-    # --- Секция OpenRouter (динамическая) ---
-    keyboard.append([InlineKeyboardButton("🎁 OpenRouter FREE:", callback_data="dummy")])
+    # Группируем модели OR по две в ряд
+    or_buttons = []
     for i, model in enumerate(current_free_or_models):
         name = get_model_short_name(model, "openrouter")
         prefix = "✅ " if user_selected_model[user_id] == model else ""
-        keyboard.append([
-            InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:o:{i + 100}")
-        ])
+        or_buttons.append(InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:o:{i + 100}"))
+        if len(or_buttons) == 2:
+            keyboard.append(or_buttons)
+            or_buttons = []
+    if or_buttons: keyboard.append(or_buttons)  # Добавляем остаток
 
-    keyboard.append([InlineKeyboardButton("🤖 Автоматический выбор", callback_data="sel:auto")])
+    keyboard.append([InlineKeyboardButton("──────────────", callback_data="dummy")])
+
+    # --- Секция Gemini ---
+    keyboard.append([InlineKeyboardButton("✨ Gemini (Резерв):", callback_data="dummy")])
+
+    gem_buttons = []
+    for i, model in enumerate(GEMINI_MODELS):
+        name = get_model_short_name(model, "gemini")
+        prefix = "✅ " if user_selected_model[user_id] == model else ""
+        gem_buttons.append(InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:g:{i}"))
+        if len(gem_buttons) == 2:
+            keyboard.append(gem_buttons)
+            gem_buttons = []
+    if gem_buttons: keyboard.append(gem_buttons)
+
+    # --- Системные кнопки ---
+    keyboard.append([InlineKeyboardButton("🤖 Автоматический выбор (OR -> Gem)", callback_data="sel:auto")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "<b>Выбор модели ИИ</b>\nАвтовыбор сначала пробует OpenRouter, затем Gemini."
 
-    # --- УНИВЕРСАЛЬНАЯ ОТПРАВКА ---
-    # effective_message сам определит, откуда отвечать (на сообщение или на кнопку)
-    if update.effective_message:
-        await update.effective_message.reply_text(
-            "Выбери модель из актуального списка:",
-            reply_markup=reply_markup
-        )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
     else:
-        # Резервный вариант через прямой вызов метода бота
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Выбери модель из актуального списка:",
-            reply_markup=reply_markup
-        )
-async def callback_handler(update: Update, context):
-    query = update.callback_query
-    await query.answer()
+        await update.effective_message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
-    data = query.data
-    user_id = query.from_user.id
-
-    if data == "open_menu":
-        # Передаем update целиком, а не query
-        await show_model_selection(update, context)
-        return
-
-    if data == "dummy":
-        return
-
-    if data == "sel:auto":
-        user_selected_model[user_id] = None
-        user_selected_provider[user_id] = "gemini"
-        await query.edit_message_text("Вернулся автоматический выбор моделей")
-        return
-
-    if not data.startswith("sel:"):
-        return
-
-    try:
-        _, prov_short, idx_str = data.split(":")
-        idx = int(idx_str)
-    except:
-        await query.edit_message_text("Ошибка выбора модели")
-        return
-
-    model_path = None
-    provider = None
-
-    if prov_short == "g":
-        model_path = GEMINI_MODEL_BY_ID.get(idx_str)
-        provider = "gemini"
-    elif prov_short == "o":
-        model_path = OPENROUTER_MODEL_BY_ID.get(idx_str)
-        provider = "openrouter"
-
-    if model_path:
-        user_selected_model[user_id] = model_path
-        user_selected_provider[user_id] = provider
-        name = get_model_short_name(model_path, provider)
-        await query.edit_message_text(f"Выбрана модель:\n{provider.upper()} → {name}")
-    else:
-        await query.edit_message_text("Не  удалось выбрать модель")
+# --- Обновленный блок process_llm (логика перебора) ---
 
 async def process_llm(update: Update, context, final_query: str, thread_id=None):
     if not final_query.strip():
@@ -311,6 +231,7 @@ async def process_llm(update: Update, context, final_query: str, thread_id=None)
     reply_to_message_id = update.effective_message.message_id
     user_id = update.effective_user.id
 
+    # Обновляем историю
     history = chat_histories[chat_id]
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
     chat_histories[chat_id] = history[-4:]
@@ -320,7 +241,7 @@ async def process_llm(update: Update, context, final_query: str, thread_id=None)
 
     status_msg = await context.bot.send_message(
         chat_id=chat_id,
-        text="⚡ Запускаю модели...",
+        text="⚡ Запускаю нейросети...",
         reply_to_message_id=reply_to_message_id,
         message_thread_id=thread_id
     )
@@ -331,204 +252,145 @@ async def process_llm(update: Update, context, final_query: str, thread_id=None)
     used_model_path = None
 
     ADAPTIVE_SYSTEM_PROMPT = SYSTEM_PROMPT + "\nИспользуй HTML-теги: <b>жирный</b>, <i>курсив</i>."
-
     selected_model = user_selected_model[user_id]
     selected_provider = user_selected_provider[user_id]
-    # --- БЛОК ФАКТЧЕКИНГА В process_llm ---
-    check_words = ["чекай", "проверь", 'факты', 'новости']
 
-    # Теперь фактчекинг включается ЕСЛИ:
-    # 1. Есть ключевое слово
-    # 2. ИЛИ есть метка "ОБЪЕКТ ПРОВЕРКИ" (которую мы вешаем в handle_private для пересланных постов)
+    # --- БЛОК ФАКТЧЕКИНГА ---
+    check_words = ["чекай", "проверь", 'факты', 'новости']
     is_factcheck = ("ОБЪЕКТ ПРОВЕРКИ:" in final_query) or any(word in final_query.lower() for word in check_words)
 
     if is_factcheck:
         try:
-            # 1. Выделяем чистую новость для поиска
             if "ОБЪЕКТ ПРОВЕРКИ:" in final_query:
-                # Берем только текст между метками
                 search_query = final_query.split("ОБЪЕКТ ПРОВЕРКИ:")[1].split("\n\nВОПРОС:")[0].strip()
             else:
                 search_query = final_query
 
-                # Если запрос пустой (например, юзер переслал пустую картинку), выходим из поиска
-            if not search_query:
-                raise ValueError("Пустой запрос для поиска")
-
-            # 2. Визуальный фидбек в телеграм
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=status_id,
-                text=f"🔍 Проверяю новость:\n«{search_query[:60]}...»"
-            )
-
-            # 3. Запрос в web_utils (ищем ТОЛЬКО новость)
-            web_data = await get_web_context(search_query)
-
-            if web_data:
-                # Экранируем спецсимволы, чтобы не ломать HTML верстку бота
-                clean_web_data = web_data.replace("<", "&lt;").replace(">", "&gt;")
-
-                # Формируем расширенный промпт для нейросети
-                # В блоке if web_data внутри process_llm:
-                final_query = (
-                    f"ИНФОРМАЦИЯ ИЗ СЕТИ:\n{web_data}\n\n"
-                    f"ЗАДАЧА:\n"
-                    f"1. Сравни заголовки и краткое содержание из списка выше.\n"
-                    f"2. Есть ли противоречия? (например, один источник говорит 'да', другой 'нет').\n"
-                    f"3. Если новость найдена ТОЛЬКО в одном источнике, оцени это как 'низкий уровень достоверности'.\n"
-                    f"4. Сделай итоговый вывод: это скорее ПРАВДА, СКОРЕЕ ЛОЖЬ или НУЖНЫ ПОДРОБНОСТИ.\n"
-                    f"ОБЪЕКТ ДЛЯ АНАЛИЗА: {search_query}"
+            if search_query:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=status_id,
+                    text=f"🔍 Режим детектива: проверяю «{search_query[:50]}...»"
                 )
+                web_data = await get_web_context(search_query)
 
-                # Обновляем историю сообщений для модели
-                history[-1] = Content(role="user", parts=[types.Part(text=final_query)])
-            else:
-                # Если поиск ничего не дал, можно добавить легкий сарказм или просьбу уточнить
-                print(f"🔍 Поиск по запросу '{search_query}' не дал результатов.")
+                if web_data:
+                    # Инъекция жесткой инструкции для режима Инспектора
+                    final_query = (
+                        f"⚠️ АКТИВИРОВАН РЕЖИМ ИНСПЕКТОРА ⚠️\n\n"
+                        f"КОНТЕКСТ ИЗ СЕТИ:\n{web_data}\n\n"
+                        f"ОБЪЕКТ АНАЛИЗА: {search_query}\n\n"
+                        f"ИНСТРУКЦИЯ:\n"
+                        f"1. Проведи перекрестный анализ данных выше.\n"
+                        f"2. Выдели факты, которые подтверждаются, и те, что противоречат друг другу.\n"
+                        f"3. Оцени надежность источников.\n"
+                        f"4. Сформулируй беспристрастный вывод и укажи вероятность правды в %.\n"
+                        f"5. Дай полный и детальный ответ, без сокращений.\n"
+                        f"6. Структурируй ответ списками или абзацами. Не используй таблицы или тег <table>."
+                    )
+                    history[-1] = Content(role="user", parts=[types.Part(text=final_query)])
+
         except Exception as e:
-            print(f"⚠️ Ошибка фактчекинга: {e}")
+            print(f"⚠️ Ошибка поиска: {e}")
 
-    # 1. Пробуем выбранную пользователем модель (если выбрана)
+    # --- 1. ЕСЛИ МОДЕЛЬ ВЫБРАНА ВРУЧНУЮ ---
     if selected_model:
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id, message_id=status_id,
-                text=f"🔄 Пробую выбранную модель: {selected_model.split('/')[-1]}..."
+                text=f"🔄 Пробую: {get_model_short_name(selected_model, selected_provider)}..."
             )
-
             if selected_provider == "gemini":
                 response = gemini_client.models.generate_content(
                     model=selected_model,
                     contents=[Content(role="model", parts=[types.Part(text=ADAPTIVE_SYSTEM_PROMPT)])] + history,
-                    config=GenerateContentConfig(temperature=0.75, max_output_tokens=4000, top_p=0.92)
+                    config=GenerateContentConfig(temperature=0.75, max_output_tokens=4000)
                 )
                 if response and response.text:
                     reply_text = response.text.strip()
-                    used_provider = "Gemini"
-                    used_model_path = selected_model
-
-            else:  # openrouter
+                    used_provider, used_model_path = "Gemini", selected_model
+            else:
                 messages = [{"role": "system", "content": ADAPTIVE_SYSTEM_PROMPT}]
                 for msg in history:
-                    role = "user" if msg.role == "user" else "assistant"
-                    content = msg.parts[0].text if msg.parts else ""
-                    messages.append({"role": role, "content": content})
+                    messages.append(
+                        {"role": "user" if msg.role == "user" else "assistant", "content": msg.parts[0].text})
 
-                response = or_client.chat.completions.create(
-                    model=selected_model,
-                    messages=messages,
-                    temperature=0.75,
-                    max_tokens=4000
-                )
-                if response.choices and response.choices[0].message.content:
+                response = or_client.chat.completions.create(model=selected_model, messages=messages, temperature=0.75)
+                if response.choices[0].message.content:
                     reply_text = response.choices[0].message.content.strip()
-                    used_provider = "OpenRouter"
-                    used_model_path = selected_model
-
+                    used_provider, used_model_path = "OpenRouter", selected_model
         except Exception as e:
-            model_name = get_model_short_name(selected_model, selected_provider)
-            # Создаем кнопку, которая просто вызовет меню моделей
-            keyboard = [[InlineKeyboardButton("🔄 Выбрать другую модель", callback_data="open_menu")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_id,
-                text=f"❌ Модель {model_name} сейчас недоступна.\nПопробуй выбрать другую из списка ниже:",
-                reply_markup=reply_markup
-            )
-            return  # Прерываем, сообщение НЕ удаляем
+            print(f"Ошибка выбранной модели: {e}")
 
-    # 2. Обычный перебор, если ничего не получилось
+    # --- 2. АВТОПЕРЕБОР (OpenRouter -> Gemini) ---
     if reply_text is None:
-        # Gemini
-        for model_path in GEMINI_MODELS:
+        # Сначала весь OpenRouter (т.к. он в приоритете)
+        for model_path in current_free_or_models:
             try:
                 await context.bot.edit_message_text(
                     chat_id=chat_id, message_id=status_id,
-                    text=f"🔄 Gemini: {model_path.split('/')[-1]}..."
+                    text=f"🔄 OR: {model_path.split('/')[-1].split(':')[0]}..."
                 )
+                messages = [{"role": "system", "content": ADAPTIVE_SYSTEM_PROMPT}]
+                for msg in history:
+                    messages.append(
+                        {"role": "user" if msg.role == "user" else "assistant", "content": msg.parts[0].text})
 
-                response = gemini_client.models.generate_content(
-                    model=model_path,
-                    contents=[Content(role="model", parts=[types.Part(text=ADAPTIVE_SYSTEM_PROMPT)])] + history,
-                    config=GenerateContentConfig(temperature=0.75, max_output_tokens=4000, top_p=0.92)
-                )
-                if response and response.text:
-                    reply_text = response.text.strip()
-                    used_provider = "Gemini"
-                    used_model_path = model_path
+                response = or_client.chat.completions.create(model=model_path, messages=messages, timeout=25)
+                if response.choices and response.choices[0].message.content:
+                    reply_text = response.choices[0].message.content.strip()
+                    used_provider, used_model_path = "OpenRouter", model_path
                     break
-            except Exception:
+            except:
                 continue
 
-        # OpenRouter fallback
+        # Если OpenRouter не помог, идем в Gemini
         if reply_text is None:
-            messages = [{"role": "system", "content": ADAPTIVE_SYSTEM_PROMPT}]
-            for msg in history:
-                role = "user" if msg.role == "user" else "assistant"
-                content = msg.parts[0].text if msg.parts else ""
-                messages.append({"role": role, "content": content})
-
-            for model_path in current_free_or_models:
+            for model_path in GEMINI_MODELS:
                 try:
                     await context.bot.edit_message_text(
                         chat_id=chat_id, message_id=status_id,
-                        text=f"🔄 OR: {model_path.split('/')[-1].split(':')[0]}..."
+                        text=f"🔄 Gemini: {model_path.split('/')[-1]}..."
                     )
-                    response = or_client.chat.completions.create(
+                    response = gemini_client.models.generate_content(
                         model=model_path,
-                        messages=messages,
-                        temperature=0.75,
-                        max_tokens=4000
+                        contents=[Content(role="model", parts=[types.Part(text=ADAPTIVE_SYSTEM_PROMPT)])] + history
                     )
-                    if response.choices and response.choices[0].message.content:
-                        reply_text = response.choices[0].message.content.strip()
-                        used_provider = "OpenRouter"
-                        used_model_path = model_path
+                    if response and response.text:
+                        reply_text = response.text.strip()
+                        used_provider, used_model_path = "Gemini", model_path
                         break
-                except Exception:
+                except:
                     continue
 
-    # 3. Финальный результат
+    # --- 3. ФИНАЛЬНЫЙ ОТВЕТ ---
     if reply_text is None:
-        await context.bot.edit_message_text(
-            chat_id=chat_id, message_id=status_id,
-            text="❌ Все модели сейчас недоступны 😔"
-        )
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=status_id,
+                                            text="❌ Все модели сейчас недоступны 😔")
         return
 
-    # Сохраняем ответ в историю
     chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
-
     model_short = used_model_path.split("/")[-1].split(":")[0]
     full_reply = f"<b>{used_provider}: {model_short}</b>\n\n{format_to_html(reply_text)}"
 
-    MAX_LEN = 4000
-    if len(full_reply) <= MAX_LEN:
+    if len(full_reply) <= 4000:
         try:
             await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_id,
-                text=full_reply,
-                parse_mode="HTML",  # Пытаемся отправить красиво
-                disable_web_page_preview=True
+                chat_id=chat_id, message_id=status_id,
+                text=full_reply, parse_mode="HTML", disable_web_page_preview=True
             )
-        except Exception as e:
-            print(f"⚠️ Ошибка HTML: {e}")
-            # Если не вышло (кривые теги), отправляем чистый текст
-            # Strip tags - удаляем теги, чтобы не было мусора <b>
+        except Exception:
             clean_reply = re.sub(r'<[^>]+>', '', full_reply)
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_id,
-                text=clean_reply,  # Отправляем без HTML
-                parse_mode=None
-            )
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_id, text=clean_reply)
     else:
-        # Разбивка на части — можно оставить как было в оригинале
+        # Для очень длинных текстов
         await context.bot.delete_message(chat_id=chat_id, message_id=status_id)
-        # ... здесь можно вставить твою логику разбиения на части
-
+        for i in range(0, len(full_reply), 4000):
+            chunk = full_reply[i:i + 4000]
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
+            except Exception:
+                clean_chunk = re.sub(r'<[^>]+>', '', chunk)
+                await context.bot.send_message(chat_id=chat_id, text=clean_chunk)
 
 # ─── Handlers ───────────────────────────────────────────────────────────────
 
@@ -550,113 +412,91 @@ async def start(update: Update, context):
 async def handle_private(update: Update, context):
     user_id = update.effective_user.id
     message = update.message
-    if not message:
-        return
+    if not message: return
 
-    # 1. Проверка авторизации (твой код без изменений)
+    # Проверка авторизации
     if user_id not in authorized_users:
-        text = (message.text or "").strip()
-        if text.lower() == CORRECT_PASSWORD.lower():
+        query_text = message.text.strip().lower()
+        if query_text == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
-            await message.reply_text(
-                "Авторизация пройдена! 🎉\nТеперь можешь задавать вопросы.\n\n/model — выбор модели")
+            await message.reply_text("Авторизация успешна! Теперь можно пользоваться ботом.\nИспользуй /model")
         else:
-            await message.reply_text("Неправильный пароль 😕\nИспользуй /start")
+            await message.reply_text("Неверный пароль. Попробуй еще раз.\nПопробуй /start")
         return
 
-    # 2. Извлечение текста
     query_text = message.text or message.caption or ""
+    if not query_text.strip(): return
 
-    if not query_text.strip():
-        await message.reply_text("Я вижу сообщение, но не вижу в нём текста для анализа. 😏")
-        return
-
-    # Проверяем, является ли сообщение пересланным
-    # В новых версиях PTB используется forward_origin
+    # Условия
     is_forwarded = bool(message.forward_origin)
+    check_words = ["чекай", "проверь", "факты", "новости"]
+    has_check_word = any(word in query_text.lower() for word in check_words)
+    is_reply = bool(message.reply_to_message)
 
-    if is_forwarded:
-        # Если переслано — помечаем как объект для фактчекинга
-        final_prompt = f"ОБЪЕКТ ПРОВЕРКИ: {query_text}\n\nВОПРОС: Это правда?"
+    # ЛОГИКА:
+    # 1. Форвард или обычное сообщение/реплай с чек-вордом -> ИНСПЕКТОР
+    if is_forwarded or has_check_word:
+        target_text = query_text
+        # Если это реплай с чек-вордом, берем текст из того, кому отвечаем
+        if is_reply and has_check_word:
+            target_text = message.reply_to_message.text or message.reply_to_message.caption or query_text
+
+        final_prompt = f"ОБЪЕКТ ПРОВЕРКИ: {target_text}\n\nВОПРОС: Проведи инспекцию фактов."
+
+    # 2. Обычное сообщение или обычный реплай -> ПОМОЩНИК (API)
     else:
-        # Обычное сообщение
         final_prompt = query_text
 
-
-    # 3. Отправка в LLM
     await process_llm(update, context, final_prompt)
+
 
 async def handle_group(update: Update, context):
     message = update.message
-    if not message:
-        return
+    if not message: return
 
     content = message.text or message.caption or ""
-    if not content:
-        return
+    if not content: return
 
-    # --- 1. ПРОВЕРКА: КТО КОГО ПОЗВАЛ ---
-    is_reply_to_me = False
-    if message.reply_to_message and message.reply_to_message.from_user:
-        if message.reply_to_message.from_user.username == BOT_USERNAME:
-            is_reply_to_me = True
-
-    TRIGGERS = ["инспектор", "шелупонь", "ботик", "бубен", "андрюха", "андрей", "малыш", "андрей генадьевич"]
     content_lower = content.lower().strip()
+    TRIGGERS = ["инспектор", "шелупонь", "ботик", "бубен", "андрюха", "андрей", "малыш", "андрей генадьевич"]
+    CHECK_WORDS = ["чекай", "проверь", "факты", "новости"]
 
-    # Регулярка для поиска триггера именно в начале
-    has_trigger_word = any(re.search(rf'^\s*\b{re.escape(word)}\b', content_lower) for word in TRIGGERS)
-    is_mentioned = is_bot_mentioned(message, BOT_USERNAME)
+    # Проверки условий
+    has_trigger = any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in TRIGGERS)
+    has_check_word = any(word in content_lower for word in CHECK_WORDS)
+    is_reply = bool(message.reply_to_message)
 
-    # Условие входа (если не к боту — выходим)
-    if not (has_trigger_word or is_mentioned or is_reply_to_me):
+    # Если к боту не обратились по имени — игнорим
+    if not has_trigger:
         return
 
-    # --- 2. ОЧИСТКА ТЕКСТА ---
+    # Очистка текста от триггера для чистого запроса
     clean_text = content
-    entities = (message.entities or []) + (message.caption_entities or [])
-
-    # Убираем @mention
-    for entity in entities:
-        if entity.type == "mention":
-            mention = content[entity.offset: entity.offset + entity.length]
-            if mention.lower() == f"@{BOT_USERNAME.lower()}":
-                clean_text = clean_text.replace(mention, "", 1)
-                break
-
-    # Убираем триггерное слово
     for word in TRIGGERS:
-        clean_text = re.sub(rf'^\s*\b{re.escape(word)}\b[,\.\s\-]*', '', clean_text, flags=re.IGNORECASE, count=1)
+        clean_text = re.sub(rf'\b{re.escape(word)}\b', '', clean_text, flags=re.IGNORECASE).strip()
 
-    clean_text = re.sub(r'^[,\.\s?!\-]+', '', clean_text).strip()
+    # ЛОГИКА:
+    # 1. Реплай + Триггер + Чек-ворд -> ИНСПЕКТОР (проверяем чужой реплай)
+    if is_reply and has_check_word:
+        target_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+        prompt = f"ОБЪЕКТ ПРОВЕРКИ: {target_text}\n\nВОПРОС: Инспектор, проверь это."
 
-    # --- 3. ФОРМИРОВАНИЕ ПРОМПТА ---
-    prompt = ""
-    if message.reply_to_message:
-        reply = message.reply_to_message
-        reply_text = reply.text or reply.caption or ""
+    # 2. Просто сообщение + Триггер + Чек-ворд -> ИНСПЕКТОР (проверяем само сообщение)
+    elif has_check_word:
+        prompt = f"ОБЪЕКТ ПРОВЕРКИ: {clean_text}\n\nВОПРОС: Проверь факты."
 
-        if reply_text:
-            # Проверка на ключевые слова фактчекинга
-            check_keywords = ["чекай", "проверь", 'факты', 'новости']
-            is_check_request = any(word in clean_text.lower() for word in check_keywords)
+    # 3. Реплай + Триггер (без чек-ворда) -> ПОМОЩНИК (API с контекстом)
+    elif is_reply:
+        target_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+        prompt = f"Контекст: {target_text}\n\nВопрос: {clean_text}"
 
-            if is_check_request:
-                # Помечаем для process_llm, что это объект для поиска в сети
-                prompt = f"ОБЪЕКТ ПРОВЕРКИ: {reply_text}\n\nВОПРОС: "
-            else:
-                prompt = f"Контекст (ответ на сообщение): {reply_text}\n\n"
+    # 4. Просто Триггер -> ПОМОЩНИК (API)
+    else:
+        prompt = clean_text
 
-    prompt += clean_text
+    await process_llm(update, context, prompt, thread_id=message.message_thread_id)
 
-    # Если после чистки пусто и это не просто реплей боту — даем подсказку
-    if not clean_text and not is_reply_to_me:
-        await message.reply_text("Я тут! Задай свой вопрос после обращения 😏")
-        return
 
-    # --- 4. ОТПРАВКА В ОБРАБОТКУ ---
-    thread_id = message.message_thread_id
-    await process_llm(update, context, prompt, thread_id=thread_id)
 
 async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -723,6 +563,59 @@ async def link_fixer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def callback_handler(update: Update, context):
+    query = update.callback_query
+    await query.answer()  # Убирает "часики" на кнопке
+
+    data = query.data
+    user_id = query.from_user.id
+
+    if data == "open_menu":
+        await show_model_selection(update, context)
+        return
+
+    if data == "dummy":
+        return
+
+    if data == "sel:auto":
+        user_selected_model[user_id] = None
+        user_selected_provider[user_id] = "openrouter"  # Начинаем перебор с OR
+        await query.edit_message_text("✅ Включен автоматический выбор (OR → Gemini)")
+        return
+
+    if not data.startswith("sel:"):
+        return
+
+    try:
+        # Парсим данные вида "sel:o:105" (provider_short : index)
+        _, prov_short, idx_str = data.split(":")
+    except ValueError:
+        return
+
+    model_path = None
+    provider = None
+
+    if prov_short == "g":
+        model_path = GEMINI_MODEL_BY_ID.get(idx_str)
+        provider = "gemini"
+    elif prov_short == "o":
+        model_path = OPENROUTER_MODEL_BY_ID.get(idx_str)
+        provider = "openrouter"
+
+    if model_path:
+        user_selected_model[user_id] = model_path
+        user_selected_provider[user_id] = provider
+        name = get_model_short_name(model_path, provider)
+
+        # Сразу предлагаем обновить меню, чтобы увидеть "галочку"
+        keyboard = [[InlineKeyboardButton("🔙 Назад к списку", callback_data="open_menu")]]
+        await query.edit_message_text(
+            f"🎯 Выбрана модель:\n<b>{provider.upper()}</b> → <code>{name}</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await query.edit_message_text("❌ Ошибка: Модель не найдена в текущем списке.")
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
