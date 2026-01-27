@@ -60,51 +60,61 @@ OPENROUTER_MODELS = [
 ]
 
 # 2. Теперь сама функция (она теперь видит BLACKLISTED_MODELS)
+import re
+
+import re
+
+
 def fetch_free_openrouter_models():
-    """Запрашивает список, фильтрует бесплатные и сортирует по контексту"""
-    url = f"{WORKER_URL}/v1/models"
-    headers = {"Authorization": f"Bearer {OPEN_ROUTER_API_KEY}"}
+    """Динамическая сортировка: сначала самые 'умные' (B), затем контекст"""
+    url = "https://openrouter.ai/api/v1/models"
+
     try:
+        headers = {"Authorization": f"Bearer {OPEN_ROUTER_API_KEY}"}
         response = requests.get(url, headers=headers, timeout=10)
+
         if response.status_code == 200:
-            try:
-                data = response.json().get('data', [])
-            except ValueError:
-                print("⚠️ Ошибка: API вернул не JSON")
-                return None
+            all_models = response.json().get('data', [])
+            processed_models = []
 
-            free_models_data = []
-            for m in data:
-                m_id = m['id']
-                pricing = m.get('pricing', {})
-                # Берем контекст, если его нет — ставим 0
-                context_length = int(m.get('context_length', 0))
+            for m in all_models:
+                m_id = m.get('id', '')
+                if ":free" in m_id and m_id not in BLACKLISTED_MODELS:
+                    description = m.get('description', '')
 
-                # Проверка на бесплатность (цена 0 или тег :free)
-                is_free = (":free" in m_id) or (
-                        float(pricing.get('prompt', 1)) == 0 and
-                        float(pricing.get('completion', 1)) == 0
-                )
+                    # 1. Ищем параметры: число + B (например, 141B или 93,8B)
+                    # Учитываем и точку, и запятую в числах
+                    size_match = re.search(r'(\d+[.,]?\d*)\s*[Bb]', description)
 
-                # ВОТ ТУТ ОНА ИСПОЛЬЗУЕТ СПИСОК
-                if is_free and m_id not in BLACKLISTED_MODELS:
-                    free_models_data.append({
+                    if size_match:
+                        # Заменяем запятую на точку для float
+                        val_str = size_match.group(1).replace(',', '.')
+                        size_val = float(val_str)
+                    else:
+                        size_val = 0.0
+
+                    processed_models.append({
                         'id': m_id,
-                        'context': context_length
+                        'size': size_val,
+                        'context': int(m.get('context_length', 0))
                     })
 
-            # Сортировка: сначала большой контекст, потом по алфавиту
+            # 2. ГЛАВНАЯ СОРТИРОВКА:
+            # Сначала по размеру 'мозга' (size),
+            # и только если размеры равны — по длине контекста.
             sorted_models = sorted(
-                free_models_data,
-                key=lambda x: (-x['context'], x['id'])
+                processed_models,
+                key=lambda x: (-x['size'], -x['context'])
             )
 
-            return [m['id'] for m in sorted_models]
+            result = [m['id'] for m in sorted_models[:15]]
+            print(f"🧬 Отсортировано по весу знаний. Топ: {result[0] if result else 'пусто'}")
+            print(result)
+            return result
 
     except Exception as e:
-        print(f"⚠️ Ошибка при запросе моделей: {e}")
+        print(f"⚠️ Ошибка сортировки по параметрам: {e}")
     return None
-
 # Изначально заполняем из твоего списка
 # (если API не ответит, бот не останется с пустым меню)
 current_free_or_models = OPENROUTER_MODELS.copy()
