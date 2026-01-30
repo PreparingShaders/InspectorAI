@@ -68,15 +68,3 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 50)
     print("Тестирование завершено.")
-
-    # OPENROUTER_MODELS = [
-    #     "xiaomi/mimo-v2-flash:free",
-    #     "allenai/molmo-2-8b:free",
-    #     "google/gemma-3-27b-it:free",
-    #     "nousresearch/hermes-3-llama-3.1-405b:free",
-    #     "nvidia/nemotron-3-nano-30b-a3b:free",
-    #     "mistralai/devstral-2512:free",
-    #     "tngtech/deepseek-r1t2-chimera:free",
-    #     'liquid/lfm-2.5-1.2b-thinking:free',
-    #     'qwen/qwen3-next-80b-a3b-instruct:free',
-    # ]

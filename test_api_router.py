@@ -33,19 +33,16 @@ deepseek_client = openai.OpenAI(
 
 
 OPENROUTER_MODELS = [
-    "mistralai/devstral-2512:free",
+    'nvidia/nemotron-3-nano-30b-a3b:free',
+    'arcee-ai/trinity-large-preview:free',
     'tngtech/deepseek-r1t2-chimera:free',
     'tngtech/deepseek-r1t-chimera:free',
-    'z-ai/glm-4.5-air:free',
     'deepseek/deepseek-r1-0528:free',
     'tngtech/tng-r1t-chimera:free',
-    'nvidia/nemotron-3-nano-30b-a3b:free',
-    'meta-llama/llama-3.3-70b-instruct:free',
     'google/gemma-3-27b-it:free',
-    'google/gemini-2.0-flash-exp:free',
-    'bytedance-seed/seedream-4.5',
-    'arcee-ai/trinity-mini:free',
+    'z-ai/glm-4.5-air:free',
 ]
+
 
 DEEPSEEK_MODELS = [
     "deepseek-chat",          # максимум бесплатных токенов + высокая скорость
