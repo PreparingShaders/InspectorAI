@@ -102,88 +102,110 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
     message = update.message
     if not message: return
 
-    # 1. Определяем, с каким текстом работаем
-    raw_text = voice_text or message.text
-    if not raw_text: return
+    # 1. Текст текущего сообщения
+    raw_text = voice_text or message.text or message.caption or ""
 
-    # 2. Проверка авторизации
+    # 2. Проверка на Forward (все виды)
+    is_forwarded = bool(message.forward_origin)
+
+    # 3. Контекст реплая
+    reply_text = ""
+    if message.reply_to_message:
+        reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+
+    if not raw_text and not reply_text: return
+
+    # --- Авторизация (пропускаем для краткости) ---
     if user_id not in authorized_users:
-        # Проверяем пароль именно в raw_text (чтобы можно было сказать пароль голосом)
         if raw_text.strip().lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
-            await message.reply_text("Доступ разрешен! Используй /model для выбора.")
-        else:
-            await message.reply_text(AUTH_QUESTION)
+            await message.reply_text("✅ Доступ разрешен!.\nИспользуй /model или кнопку")
+            return
+        await message.reply_text(AUTH_QUESTION)
         return
 
-    # 3. Основная логика (уже для авторизованных)
+    # 4. Поиск триггера и очистка текста
     text_lower = raw_text.lower()
+    found_trigger = None
+    for word in CHECK_WORDS:
+        if word in text_lower:
+            found_trigger = word
+            break
 
-    # Ищем ссылки именно в сообщении (Entities)
-    has_url = any(e.type in ['url', 'text_link'] for e in (message.entities or []))
+    # 5. ОПРЕДЕЛЕНИЕ РЕЖИМА И ФОРМИРОВАНИЕ ПРОМПТА
+    if is_forwarded:
+        mode = "inspector"
+        final_prompt = raw_text
+    elif found_trigger:
+        mode = "inspector"
+        # Убираем только само слово-триггер из запроса, чтобы не мусорить
+        clean_user_query = re.sub(re.escape(found_trigger), '', raw_text, flags=re.IGNORECASE).strip()
 
-    # Ищем проверочные слова в распознанном или присланном тексте
-    has_check = any(word in text_lower for word in CHECK_WORDS)
+        if reply_text:
+            # Складываем: текст из реплая + уточнение пользователя (без слова "чекай")
+            final_prompt = f"ОБЪЕКТ ПРОВЕРКИ:\n{reply_text}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{clean_user_query}" if clean_user_query else reply_text
+        else:
+            final_prompt = clean_user_query if clean_user_query else raw_text
+    else:
+        mode = "chat"
+        final_prompt = f"Контекст: {reply_text}\n\nВопрос: {raw_text}" if reply_text else raw_text
 
-    # Решаем: Инспектор или Чат
-    mode = "inspector" if (has_url or has_check) else "chat"
-
+    # 6. Отправка в LLM
     from llm_service import process_llm
-    # Передаем raw_text (распознанный голос или текст) в LLM
     await process_llm(
-        update, context, raw_text,
+        update, context, final_prompt,
         user_selected_model.get(user_id),
         user_selected_provider.get(user_id),
         mode=mode
     )
 
-# handlers.py
 
 async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
     message = update.message
     if not message or not (message.text or message.caption or voice_text):
         return
 
-    # 1. Сбор текста: приоритет у голоса, затем текст сообщения или подпись к фото
+    # 1. Сбор текста
     raw_text = voice_text or message.text or message.caption or ""
     text_lower = raw_text.lower()
     user_id = update.effective_user.id
 
-    # 2. Проверка триггеров обращения (регулярка теперь смотрит в raw_text)
+    # 2. Строгая проверка триггера в НАЧАЛЕ строки
     trigger_pattern = rf"^({'|'.join(map(re.escape, TRIGGERS))})\b"
     match = re.search(trigger_pattern, text_lower)
 
-    # 3. Проверка: ответ ли это на сообщение бота
-    is_reply_to_bot = False
-    if message.reply_to_message:
-        is_reply_to_bot = message.reply_to_message.from_user.id == context.bot.id
-
-    # Если нет ни триггера, ни реплая боту — игнорируем
-    if not (match or is_reply_to_bot):
+    # 3. ГЛАВНОЕ УСЛОВИЕ: Реагируем ТОЛЬКО если есть триггер-имя (даже в реплае)
+    if not match:
         return
 
-    # 4. Режим Инспектора (проверка фактов)
+    # 4. Проверка на Инспектора
     is_factcheck = any(word in text_lower for word in CHECK_WORDS)
     mode = "inspector" if is_factcheck else "chat"
 
-    # 5. Чистим текст запроса от триггера (если он был в начале)
-    user_query = raw_text
-    if match:
-        # Убираем "Андрюха, " из начала, сохраняя регистр остальной части
-        user_query = re.sub(trigger_pattern, '', raw_text, flags=re.IGNORECASE).strip()
+    # 5. Чистим текст запроса от триггера
+    user_query = re.sub(trigger_pattern, '', raw_text, flags=re.IGNORECASE).strip()
 
-    # 6. Логика работы с контекстом (реплаи)
+    # Дополнительно чистим от запятой, если написали "Андрюха, ..."
+    user_query = re.sub(r"^[,\.\s]+", "", user_query)
+
+    # 6. Работа с контекстом (Реплаи)
     if message.reply_to_message:
         reply = message.reply_to_message
         reply_text = reply.text or reply.caption or ""
 
         if is_factcheck:
-            # Если сказали "проверь" на чье-то сообщение
-            final_prompt = f"ОБЪЕКТ ПРОВЕРКИ: {reply_text}\n\nВОПРОС: {user_query}"
+            # Сценарий: Реплай + "Ботик чекай [уточнение]"
+            # Если после очистки триггеров и "чекай" что-то осталось — добавляем как вопрос
+            clean_query = user_query
+            for word in CHECK_WORDS:
+                clean_query = re.sub(rf"\b{re.escape(word)}\b", '', clean_query, flags=re.IGNORECASE).strip()
+
+            final_prompt = f"ОБЪЕКТ ПРОВЕРКИ: {reply_text}\n\nВОПРОС: {clean_query}" if clean_query else reply_text
         else:
-            # Если просто болтаем в контексте реплая
-            final_prompt = f"Контекст сообщения: {reply_text}\nВопрос: {user_query}"
+            # Сценарий: Реплай + "Ботик [текст]"
+            final_prompt = f"Контекст сообщения: {reply_text}\nВопрос: {user_query}" if user_query else reply_text
     else:
+        # Если реплая нет (просто позвали бота)
         final_prompt = user_query
 
     # 7. Отправка в LLM

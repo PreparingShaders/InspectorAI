@@ -79,7 +79,7 @@ def main():
 
     # ЛИЧКА (Текст)
     app.add_handler(MessageHandler(
-        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+        filters.ChatType.PRIVATE & (filters.TEXT | filters.FORWARDED | filters.CAPTION) & ~filters.COMMAND,
         handle_private
     ))
 
