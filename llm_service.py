@@ -26,7 +26,7 @@ gemini_client = genai.Client(
 )
 
 # --- Глобальные состояния моделей ---
-current_free_or_models = DEFAULT_OPENROUTER_MODELS.copy()
+current_free_or_models = []
 GEMINI_MODEL_BY_ID = {str(i): m for i, m in enumerate(GEMINI_MODELS)}
 OPENROUTER_MODEL_BY_ID = {}
 chat_histories = defaultdict(list)
@@ -58,17 +58,25 @@ def fetch_dynamic_models():
         print(f"⚠️ Ошибка обновления моделей: {e}")
     return None
 
+
+# llm_service.py
+
+current_free_or_models = []  # Изначально пустой или с дефолтами
+
+
 def update_model_mappings():
     global current_free_or_models, OPENROUTER_MODEL_BY_ID
-    new_list = fetch_dynamic_models()
-    if new_list:
-        current_free_or_models = new_list
 
-    OPENROUTER_MODEL_BY_ID.clear()
-    for i, path in enumerate(current_free_or_models):
-        OPENROUTER_MODEL_BY_ID[str(i + 100)] = path
+    new_models = fetch_dynamic_models()  # Твоя логика получения списка
 
+    if new_models:
+        current_free_or_models.clear()  # Очищаем старый список
+        current_free_or_models.extend(new_models)  # Наполняем тот же самый объект
 
+        # Обновляем маппинг ID
+        OPENROUTER_MODEL_BY_ID.clear()
+        for i, m in enumerate(current_free_or_models):
+            OPENROUTER_MODEL_BY_ID[str(i + 100)] = m
 # llm_service.py
 
 # Добавляем mode="chat" в аргументы функции

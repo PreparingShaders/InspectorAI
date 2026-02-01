@@ -1,22 +1,65 @@
 import re
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from llm_service import process_llm
-from utils import handle_voice_transcription
 
-# Статика из конфига
-from config import (
-    CORRECT_PASSWORD, AUTH_QUESTION, TRIGGERS, CHECK_WORDS, GEMINI_MODELS
+# Финансы
+from finance import (
+    register_user, apply_expense,
+    get_detailed_report, get_all_users_except
 )
 
-# Инструменты из utils
-from utils import get_model_short_name
+# LLM и Сервисы
+from llm_service import (
+    update_model_mappings, current_free_or_models,
+    GEMINI_MODEL_BY_ID, OPENROUTER_MODEL_BY_ID, process_llm
+)
+
+# Инструменты и Конфиг
+from utils import handle_voice_transcription, get_model_short_name
+from config import (
+    CORRECT_PASSWORD, AUTH_QUESTION, TRIGGERS, CHECK_WORDS,
+    GEMINI_MODELS, FINANCE_WORDS
+)
 
 # Состояния пользователей
 authorized_users = set()
 user_selected_model = {}  # {user_id: model_path}
 user_selected_provider = {}  # {user_id: "gemini" или "openrouter"}
 
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+async def send_participant_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отрисовка меню выбора участников для разделения счета"""
+    payer_id = update.effective_user.id
+    amount = context.user_data.get('tmp_amount')
+    selected = context.user_data.get('tmp_participants', [])
+
+    users = get_all_users_except(payer_id)
+    keyboard = []
+
+    # Кнопки участников
+    for uid, name in users.items():
+        label = f"✅ {name}" if uid in selected else name
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"f_toggle:{uid}")])
+
+    # Кнопки управления
+    keyboard.append([
+        InlineKeyboardButton("🚀 РАССЧИТАТЬ", callback_data="f_confirm"),
+        InlineKeyboardButton("❌ ОТМЕНА", callback_data="f_cancel")
+    ])
+
+    text = f"💰 <b>Счет на сумму: {amount} руб.</b>\nКто участвовал в этом расходе?"
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+
+
+# --- ОСНОВНЫЕ ХЕНДЛЕРЫ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -36,15 +79,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_model_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ЛОКАЛЬНЫЙ ИМПОРТ для предотвращения циклической зависимости
-    from llm_service import update_model_mappings, current_free_or_models
-
     update_model_mappings()
     user_id = update.effective_user.id
     keyboard = []
 
-    # --- Секция OpenRouter ---
-    keyboard.append([InlineKeyboardButton("🎁 OpenRouter (Most Popular Free):", callback_data="dummy")])
+    # OpenRouter
+    keyboard.append([InlineKeyboardButton("🎁 OpenRouter (Free):", callback_data="dummy")])
     or_buttons = []
     for i, model in enumerate(current_free_or_models):
         name = get_model_short_name(model, "openrouter")
@@ -55,7 +95,7 @@ async def show_model_selection(update: Update, context: ContextTypes.DEFAULT_TYP
             or_buttons = []
     if or_buttons: keyboard.append(or_buttons)
 
-    # --- Секция Gemini ---
+    # Gemini
     keyboard.append([InlineKeyboardButton("──────────────", callback_data="dummy")])
     keyboard.append([InlineKeyboardButton("✨ Gemini (Резерв):", callback_data="dummy")])
     gem_buttons = []
@@ -68,190 +108,156 @@ async def show_model_selection(update: Update, context: ContextTypes.DEFAULT_TYP
             gem_buttons = []
     if gem_buttons: keyboard.append(gem_buttons)
 
-    keyboard.append([InlineKeyboardButton("🤖 Автовыбор (OR -> Gem)", callback_data="sel:auto")])
+    keyboard.append([InlineKeyboardButton("🤖 Автовыбор", callback_data="sel:auto")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    text = "<b>Выбор модели ИИ</b>\nСортировка по весу знаний (B) и популярности."
+    text = "<b>Выбор модели ИИ</b>"
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
     else:
         await update.effective_message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
 
-# handlers.py
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
-    if not message or not message.voice:
-        return
-
-    # 1. Распознаем
+    if not message or not message.voice: return
     text = await handle_voice_transcription(message)
-
     if text:
-        # 2. СРАЗУ отправляем транскрипцию (чтобы видеть результат в группе)
         await message.reply_text(f"🎤 <b>Распознано:</b>\n<i>{text}</i>", parse_mode="HTML")
-
-        # 3. Пробрасываем в логику команд
         if update.effective_chat.type in ["group", "supergroup"]:
             await handle_group(update, context, voice_text=text)
         else:
             await handle_private(update, context, voice_text=text)
 
+
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
     user_id = update.effective_user.id
     message = update.message
     if not message: return
-
-    # 1. Текст текущего сообщения
     raw_text = voice_text or message.text or message.caption or ""
-
-    # 2. Проверка на Forward (все виды)
-    is_forwarded = bool(message.forward_origin)
-
-    # 3. Контекст реплая
-    reply_text = ""
-    if message.reply_to_message:
-        reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-
-    if not raw_text and not reply_text: return
-
-    # --- Авторизация (пропускаем для краткости) ---
     if user_id not in authorized_users:
         if raw_text.strip().lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
-            await message.reply_text("✅ Доступ разрешен!.\nИспользуй /model или кнопку")
+            await message.reply_text("✅ Доступ разрешен!")
             return
         await message.reply_text(AUTH_QUESTION)
         return
 
-    # 4. Поиск триггера и очистка текста
-    text_lower = raw_text.lower()
-    found_trigger = None
+    # Логика инспектора/чата (упрощено для ревью)
+    is_forwarded = bool(message.forward_origin)
+    reply_text = message.reply_to_message.text if message.reply_to_message else ""
+
+    mode = "chat"
+    final_prompt = raw_text
+
     for word in CHECK_WORDS:
-        if word in text_lower:
-            found_trigger = word
+        if word in raw_text.lower() or is_forwarded:
+            mode = "inspector"
             break
 
-    # 5. ОПРЕДЕЛЕНИЕ РЕЖИМА И ФОРМИРОВАНИЕ ПРОМПТА
-    if is_forwarded:
-        mode = "inspector"
-        final_prompt = raw_text
-    elif found_trigger:
-        mode = "inspector"
-        # Убираем только само слово-триггер из запроса, чтобы не мусорить
-        clean_user_query = re.sub(re.escape(found_trigger), '', raw_text, flags=re.IGNORECASE).strip()
-
-        if reply_text:
-            # Складываем: текст из реплая + уточнение пользователя (без слова "чекай")
-            final_prompt = f"ОБЪЕКТ ПРОВЕРКИ:\n{reply_text}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{clean_user_query}" if clean_user_query else reply_text
-        else:
-            final_prompt = clean_user_query if clean_user_query else raw_text
-    else:
-        mode = "chat"
-        final_prompt = f"Контекст: {reply_text}\n\nВопрос: {raw_text}" if reply_text else raw_text
-
-    # 6. Отправка в LLM
-    from llm_service import process_llm
-    await process_llm(
-        update, context, final_prompt,
-        user_selected_model.get(user_id),
-        user_selected_provider.get(user_id),
-        mode=mode
-    )
+    await process_llm(update, context, final_prompt, user_selected_model.get(user_id),
+                      user_selected_provider.get(user_id), mode=mode)
 
 
 async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
     message = update.message
-    if not message or not (message.text or message.caption or voice_text):
-        return
+    if not message: return
 
-    # 1. Сбор текста
+    # Регистрация участника
+    register_user(update.effective_user.id, update.effective_user.first_name)
+
     raw_text = voice_text or message.text or message.caption or ""
     text_lower = raw_text.lower()
-    user_id = update.effective_user.id
 
-    # 2. Строгая проверка триггера в НАЧАЛЕ строки
+    # Проверка состояния "Ожидание суммы"
+    if context.user_data.get('finance_state') == 'WAITING_AMOUNT':
+        amount_match = re.search(r"(\d+(?:[.,]\d+)?)", raw_text)
+        if amount_match:
+            amount = float(amount_match.group(1).replace(',', '.'))
+            context.user_data.update(
+                {'tmp_amount': amount, 'tmp_participants': [], 'finance_state': 'SELECT_PARTICIPANTS'})
+            await send_participant_selector(update, context)
+            return
+        elif "отмена" in text_lower:
+            context.user_data.clear()
+            await message.reply_text("Отменено.")
+            return
+
+    # Проверка триггера (имя бота)
     trigger_pattern = rf"^({'|'.join(map(re.escape, TRIGGERS))})\b"
-    match = re.search(trigger_pattern, text_lower)
+    if not re.search(trigger_pattern, text_lower): return
 
-    # 3. ГЛАВНОЕ УСЛОВИЕ: Реагируем ТОЛЬКО если есть триггер-имя (даже в реплае)
-    if not match:
-        return
+    user_query = re.sub(trigger_pattern, '', raw_text, flags=re.IGNORECASE).strip().lstrip(',. ')
+    query_lower = user_query.lower()
 
-    # 4. Проверка на Инспектора
-    is_factcheck = any(word in text_lower for word in CHECK_WORDS)
+    # Финансовый блок
+    if any(word in query_lower for word in FINANCE_WORDS):
+        if any(w in query_lower for w in ["баланс", "долг"]):
+            await message.reply_text(get_detailed_report(), parse_mode="HTML")
+            return
+        if "счет" in query_lower:
+            context.user_data['finance_state'] = 'WAITING_AMOUNT'
+            await message.reply_text("💵 <b>Введите сумму расхода:</b>", parse_mode="HTML")
+            return
+
+    # Режим LLM
+    is_factcheck = any(word in query_lower for word in CHECK_WORDS)
     mode = "inspector" if is_factcheck else "chat"
 
-    # 5. Чистим текст запроса от триггера
-    user_query = re.sub(trigger_pattern, '', raw_text, flags=re.IGNORECASE).strip()
+    reply_text = message.reply_to_message.text if message.reply_to_message else ""
+    final_prompt = f"Контекст: {reply_text}\nВопрос: {user_query}" if reply_text else user_query
 
-    # Дополнительно чистим от запятой, если написали "Андрюха, ..."
-    user_query = re.sub(r"^[,\.\s]+", "", user_query)
+    await process_llm(update, context, final_prompt, user_selected_model.get(update.effective_user.id),
+                      user_selected_provider.get(update.effective_user.id), thread_id=message.message_thread_id,
+                      mode=mode)
 
-    # 6. Работа с контекстом (Реплаи)
-    if message.reply_to_message:
-        reply = message.reply_to_message
-        reply_text = reply.text or reply.caption or ""
-
-        if is_factcheck:
-            # Сценарий: Реплай + "Ботик чекай [уточнение]"
-            # Если после очистки триггеров и "чекай" что-то осталось — добавляем как вопрос
-            clean_query = user_query
-            for word in CHECK_WORDS:
-                clean_query = re.sub(rf"\b{re.escape(word)}\b", '', clean_query, flags=re.IGNORECASE).strip()
-
-            final_prompt = f"ОБЪЕКТ ПРОВЕРКИ: {reply_text}\n\nВОПРОС: {clean_query}" if clean_query else reply_text
-        else:
-            # Сценарий: Реплай + "Ботик [текст]"
-            final_prompt = f"Контекст сообщения: {reply_text}\nВопрос: {user_query}" if user_query else reply_text
-    else:
-        # Если реплая нет (просто позвали бота)
-        final_prompt = user_query
-
-    # 7. Отправка в LLM
-    from llm_service import process_llm
-    await process_llm(
-        update, context, final_prompt,
-        user_selected_model.get(user_id),
-        user_selected_provider.get(user_id),
-        thread_id=message.message_thread_id,
-        mode=mode
-    )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from llm_service import GEMINI_MODEL_BY_ID, OPENROUTER_MODEL_BY_ID
-
     query = update.callback_query
-    await query.answer()
     data = query.data
     user_id = query.from_user.id
 
+    # --- ФИНАНСЫ В CALLBACK ---
+    if data.startswith("f_toggle:"):
+        uid = data.split(":")[1]
+        participants = context.user_data.get('tmp_participants', [])
+        if uid in participants:
+            participants.remove(uid)
+        else:
+            participants.append(uid)
+        context.user_data['tmp_participants'] = participants
+        await send_participant_selector(update, context)
+        await query.answer()
+        return
+
+    if data == "f_confirm":
+        participants = context.user_data.get('tmp_participants')
+        if not participants:
+            await query.answer("Выбери хотя бы одного!", show_alert=True)
+            return
+        share = apply_expense(user_id, participants, context.user_data.get('tmp_amount'))
+        await query.edit_message_text(f"✅ Записано!\nКаждый (включая тебя) должен по {share} р.")
+        context.user_data.clear()
+        return
+
+    if data == "f_cancel":
+        context.user_data.clear()
+        await query.edit_message_text("❌ Расчет отменен.")
+        return
+
+    # --- МОДЕЛИ В CALLBACK ---
+    await query.answer()
     if data == "open_menu":
         await show_model_selection(update, context)
-        return
+    elif data == "sel:auto":
+        user_selected_model[user_id] = user_selected_provider[user_id] = None
+        await query.edit_message_text("🤖 Автовыбор включен.")
+    elif data.startswith("sel:"):
+        _, prov_code, idx = data.split(":")
+        provider = "gemini" if prov_code == "g" else "openrouter"
+        model_path = GEMINI_MODEL_BY_ID.get(idx) if prov_code == "g" else OPENROUTER_MODEL_BY_ID.get(idx)
 
-    if data == "sel:auto":
-        user_selected_model[user_id] = None
-        user_selected_provider[user_id] = None
-        await query.edit_message_text("🤖 Режим автовыбора включен (сначала лучшие бесплатные OR).")
-        return
-
-    if not data.startswith("sel:"): return
-
-    _, prov_code, idx = data.split(":")
-    model_path = None
-    provider = None
-
-    if prov_code == "g":
-        model_path = GEMINI_MODEL_BY_ID.get(idx)
-        provider = "gemini"
-    elif prov_code == "o":
-        model_path = OPENROUTER_MODEL_BY_ID.get(idx)
-        provider = "openrouter"
-
-    if model_path:
-        user_selected_model[user_id] = model_path
-        user_selected_provider[user_id] = provider
-        name = get_model_short_name(model_path, provider)
-        await query.edit_message_text(f"🎯 Выбрана модель:\n<b>{provider.upper()}</b> → <code>{name}</code>",
-                                      parse_mode="HTML")
+        if model_path:
+            user_selected_model[user_id], user_selected_provider[user_id] = model_path, provider
+            name = get_model_short_name(model_path, provider)
+            await query.edit_message_text(f"🎯 Выбрана модель: <b>{name}</b>", parse_mode="HTML")
