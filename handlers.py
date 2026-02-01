@@ -29,35 +29,53 @@ user_selected_provider = {}  # {user_id: "gemini" или "openrouter"}
 
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
 async def send_participant_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отрисовка меню выбора участников для разделения счета"""
+    from finance import get_all_users_except
+    import logging
+
     payer_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     amount = context.user_data.get('tmp_amount')
     selected = context.user_data.get('tmp_participants', [])
 
-    users = get_all_users_except(payer_id)
+    # 1. Получаем ВСЕХ из базы
+    all_known_users = get_all_users_except(payer_id)
     keyboard = []
 
-    # Кнопки участников
-    for uid, name in users.items():
-        label = f"✅ {name}" if uid in selected else name
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"f_toggle:{uid}")])
+    # 2. Фильтруем только тех, кто в этом чате
+    for uid, name in all_known_users.items():
+        try:
+            # Проверяем статус участника
+            member = await context.bot.get_chat_member(chat_id, int(uid))
+            # Если юзер не вышел и не забанен
+            if member.status not in ['left', 'kicked']:
+                label = f"✅ {name}" if uid in selected else name
+                keyboard.append([InlineKeyboardButton(label, callback_data=f"f_toggle:{uid}")])
+        except Exception as e:
+            # Если ошибка (юзер не найден в чате), просто идем дальше
+            logging.error(f"Ошибка проверки юзера {uid}: {e}")
+            continue
 
-    # Кнопки управления
-    keyboard.append([
-        InlineKeyboardButton("🚀 РАССЧИТАТЬ", callback_data="f_confirm"),
-        InlineKeyboardButton("❌ ОТМЕНА", callback_data="f_cancel")
-    ])
+    # 3. Если вдруг в списке никого нет (кроме плательщика)
+    if not keyboard:
+        text = f"💰 <b>Сумма: {amount} р.</b>\n\n❌ В базе нет других участников этой группы.\nПусть они напишут что-нибудь в чат, чтобы я их запомнил!"
+        keyboard.append([InlineKeyboardButton("❌ ОТМЕНА", callback_data="f_cancel")])
+    else:
+        text = f"💰 <b>Сумма: {amount} р.</b>\n\nВыбери тех, кто скидывается (кроме тебя):"
+        keyboard.append([
+            InlineKeyboardButton("🚀 РАССЧИТАТЬ", callback_data="f_confirm"),
+            InlineKeyboardButton("❌ ОТМЕНА", callback_data="f_cancel")
+        ])
 
-    text = f"💰 <b>Счет на сумму: {amount} руб.</b>\nКто участвовал в этом расходе?"
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
-
+    try:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Ошибка отправки кнопок: {e}")
 
 # --- ОСНОВНЫЕ ХЕНДЛЕРЫ ---
 
@@ -191,14 +209,16 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
     query_lower = user_query.lower()
 
     # Финансовый блок
+    # 1. Сначала проверяем жесткие команды баланса (независимо от FINANCE_WORDS)
+    if any(w in query_lower for w in ["баланс", "долг", "кто кому"]):
+        await message.reply_text(get_detailed_report(), parse_mode="HTML")
+        return
+
+    # 2. Потом проверяем FINANCE_WORDS для начала записи чека
     if any(word in query_lower for word in FINANCE_WORDS):
-        if any(w in query_lower for w in ["баланс", "долг"]):
-            await message.reply_text(get_detailed_report(), parse_mode="HTML")
-            return
-        if "счет" in query_lower:
-            context.user_data['finance_state'] = 'WAITING_AMOUNT'
-            await message.reply_text("💵 <b>Введите сумму расхода:</b>", parse_mode="HTML")
-            return
+        context.user_data['finance_state'] = 'WAITING_AMOUNT'
+        await message.reply_text("💵 <b>Введите сумму расхода:</b>", parse_mode="HTML")
+        return
 
     # Режим LLM
     is_factcheck = any(word in query_lower for word in CHECK_WORDS)
