@@ -1,3 +1,4 @@
+#handlers
 import re
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -6,7 +7,7 @@ from telegram.ext import ContextTypes
 # Финансы
 from finance import (
     register_user, apply_expense,
-    get_detailed_report, get_all_users_except
+    get_detailed_report, get_all_users_except, settle_debt
 )
 
 # LLM и Сервисы
@@ -30,8 +31,6 @@ user_selected_provider = {}  # {user_id: "gemini" или "openrouter"}
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 async def send_participant_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from finance import get_all_users_except
-    import logging
 
     payer_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -187,18 +186,28 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
     raw_text = voice_text or message.text or message.caption or ""
     text_lower = raw_text.lower()
 
-    # Проверка состояния "Ожидание суммы"
-    if context.user_data.get('finance_state') == 'WAITING_AMOUNT':
+    # Проверка состояний финансов
+    state = context.user_data.get('finance_state')
+
+    if state in ['WAITING_AMOUNT', 'WAITING_PAYBACK_AMOUNT']:
         amount_match = re.search(r"(\d+(?:[.,]\d+)?)", raw_text)
         if amount_match:
             amount = float(amount_match.group(1).replace(',', '.'))
-            context.user_data.update(
-                {'tmp_amount': amount, 'tmp_participants': [], 'finance_state': 'SELECT_PARTICIPANTS'})
-            await send_participant_selector(update, context)
-            return
-        elif "отмена" in text_lower:
-            context.user_data.clear()
-            await message.reply_text("Отменено.")
+
+            if state == 'WAITING_AMOUNT':
+                context.user_data.update(
+                    {'tmp_amount': amount, 'tmp_participants': [], 'finance_state': 'SELECT_PARTICIPANTS'})
+                await send_participant_selector(update, context)
+
+            else:  # WAITING_PAYBACK_AMOUNT
+                from finance import settle_debt
+                creditor_id = context.user_data.get('tmp_creditor_id')
+                success, text = settle_debt(update.effective_user.id, creditor_id, amount)
+                if success:
+                    context.user_data.clear()
+                    await message.reply_text(text, parse_mode="HTML")
+                else:
+                    await message.reply_text(f"❌ {text}\nПопробуй еще раз или напиши 'отмена'.", parse_mode="HTML")
             return
 
     # Проверка триггера (имя бота)
@@ -210,7 +219,7 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
 
     # Финансовый блок
     # 1. Сначала проверяем жесткие команды баланса (независимо от FINANCE_WORDS)
-    if any(w in query_lower for w in ["баланс", "долг", "кто кому"]):
+    if any(w in query_lower for w in ["баланс", "задолжность", "кто кому"]):
         await message.reply_text(get_detailed_report(), parse_mode="HTML")
         return
 
@@ -219,6 +228,41 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
         context.user_data['finance_state'] = 'WAITING_AMOUNT'
         await message.reply_text("💵 <b>Введите сумму расхода:</b>", parse_mode="HTML")
         return
+
+    # 3. Час расплаты (списание долга)
+    if any(w in query_lower for w in ["час расплаты", "вернуть долг", "отдать долг", 'ланистеры платят долги']):
+        from finance import load_db
+        db = load_db()
+        my_debts = db.get(str(update.effective_user.id), {}).get("debts", {})
+
+        # Фильтруем только реальные долги (> 0)
+        active_debts = {k: v for k, v in my_debts.items() if v > 0}
+
+        if not active_debts:
+            await message.reply_text("✨ Ты никому ничего не должен. Спи спокойно, Ланистер!")
+            return
+
+        if len(active_debts) == 1:
+            # Если должен только одному человеку
+            creditor_id = list(active_debts.keys())[0]
+            context.user_data.update({
+                'finance_state': 'WAITING_PAYBACK_AMOUNT',
+                'tmp_creditor_id': creditor_id
+            })
+            creditor_name = db.get(creditor_id, {}).get("name", "Друг")
+            await message.reply_text(f"💰 Сколько возвращаем для <b>{creditor_name}</b>?", parse_mode="HTML")
+        else:
+            # Если должен нескольким — строим клавиатуру
+            keyboard = []
+            for c_id, amt in active_debts.items():
+                c_name = db.get(c_id, {}).get("name", "Unknown")
+                keyboard.append(
+                    [InlineKeyboardButton(f"{c_name} (долг: {amt} р.)", callback_data=f"pay_select:{c_id}")])
+
+            keyboard.append([InlineKeyboardButton("❌ ОТМЕНА", callback_data="f_cancel")])
+            await message.reply_text("Кому именно ты возвращаешь долг?", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
 
     # Режим LLM
     is_factcheck = any(word in query_lower for word in CHECK_WORDS)
@@ -248,6 +292,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['tmp_participants'] = participants
         await send_participant_selector(update, context)
         await query.answer()
+        return
+
+    if data.startswith("pay_select:"):
+        creditor_id = data.split(":")[1]
+        from finance import load_db
+        db = load_db()
+        creditor_name = db.get(creditor_id, {}).get("name", "Друг")
+
+        context.user_data.update({
+            'finance_state': 'WAITING_PAYBACK_AMOUNT',
+            'tmp_creditor_id': creditor_id
+        })
+        await query.edit_message_text(f"💰 Сколько возвращаем для <b>{creditor_name}</b>?", parse_mode="HTML")
         return
 
     if data == "f_confirm":

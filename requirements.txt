@@ -6,3 +6,4 @@ openai
 asyncio
 faster-whisper
 ddgs
+youtube_transcript_api

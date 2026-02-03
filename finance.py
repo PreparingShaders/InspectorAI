@@ -1,3 +1,4 @@
+#finance.py
 import json
 import os
 import logging
@@ -100,3 +101,38 @@ def get_all_users_except(exclude_id):
     db = load_db()
     exclude_id = str(exclude_id)
     return {uid: info["name"] for uid, info in db.items() if uid != exclude_id}
+
+
+def settle_debt(debtor_id, creditor_id, amount):
+    """
+    Списание долга (процесс отдачи денег).
+    debtor_id: кто отдает (тот, кто был должен)
+    creditor_id: кому отдают
+    amount: сколько денег передали (float)
+    """
+    db = load_db()
+    debtor_id = str(debtor_id)
+    creditor_id = str(creditor_id)
+
+    if debtor_id not in db or creditor_id not in db:
+        return False, "Один из пользователей не найден в базе."
+
+    # Проверяем текущий долг
+    current_debt = db[debtor_id].get("debts", {}).get(creditor_id, 0)
+
+    if current_debt <= 0:
+        return False, f"<b>{db[debtor_id]['name']}</b> ничего не должен <b>{db[creditor_id]['name']}</b>."
+
+    if amount > current_debt:
+        return False, f"Сумма (<code>{amount}</code>) больше долга (<code>{current_debt}</code>). Ланистеры не платят лишнего!"
+
+    # Списываем долг
+    new_debt = round(current_debt - amount, 2)
+    db[debtor_id]["debts"][creditor_id] = new_debt
+
+    # Если долг обнулился, можно почистить ключ (по желанию)
+    if new_debt == 0:
+        del db[debtor_id]["debts"][creditor_id]
+
+    save_db(db)
+    return True, f"✅ <b>{db[debtor_id]['name']}</b> вернул <b>{db[creditor_id]['name']}</b> <code>{amount}</code> р.\nОстаток долга: <code>{new_debt}</code> р."
