@@ -8,5 +8,7 @@ faster-whisper
 ddgs
 youtube_transcript_api
 python-telegram-bot[job-queue]>=20.0
+pytest
 pytest-mock
 pytest-asyncio
+

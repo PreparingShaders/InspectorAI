@@ -1,3 +1,4 @@
+#test.yml
 name: Python Tests
 
 on: [push, pull_request]
@@ -18,4 +19,4 @@ jobs:
           pip install pytest
       - name: Run tests
         run: |
-          python -m pytest
+          python -m pytest InspectorAI/tests
