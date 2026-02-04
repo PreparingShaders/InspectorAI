@@ -31,9 +31,7 @@ jobs:
 
       - name: Run tests
         run: |
-          # Переходим в папку с кодом
-          cd InspectorAI
-          # Добавляем текущую папку в пути Python
+          # Добавляем текущую папку в PYTHONPATH, чтобы тесты видели модули
           export PYTHONPATH=$PYTHONPATH:.
-          # Запускаем pytest для папки tests, которая лежит внутри InspectorAI
-          python -m pytest tests/
+          # Просто запускаем pytest (он сам найдет папку tests в корне)
+          python -m pytest
