@@ -19,4 +19,7 @@ jobs:
           pip install pytest
       - name: Run tests
         run: |
+          # Указываем Python, что корень проекта находится в папке InspectorAI
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/InspectorAI
+          # Запускаем pytest, указывая точный путь к папке с тестами
           python -m pytest InspectorAI/tests
