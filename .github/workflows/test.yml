@@ -30,6 +30,12 @@ jobs:
           ls -R
 
       - name: Run tests
+        env:
+          PYTHONPATH: .
+          # Подсовываем фейковые ключи, чтобы OpenAI/Gemini не ругались при старте
+          OPENAI_API_KEY: "sk-fake-123"
+          GEMINI_API_KEY: "fake-gemini-123"
+          TELEGRAM_TOKEN: "123:abc"
         run: |
           # Добавляем текущую папку в PYTHONPATH, чтобы тесты видели модули
           export PYTHONPATH=$PYTHONPATH:.

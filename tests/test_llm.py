@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from InspectorAI.llm_service import process_llm
 
+
 @pytest.mark.asyncio
 async def test_llm_fallback(mocker):
     context = MagicMock()
