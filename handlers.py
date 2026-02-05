@@ -160,17 +160,30 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
         await message.reply_text(AUTH_QUESTION)
         return
 
-    # Логика инспектора/чата (упрощено для ревью)
+    # 1. Проверяем, является ли сообщение пересланным (форвардом)
     is_forwarded = bool(message.forward_origin)
-    reply_text = message.reply_to_message.text if message.reply_to_message else ""
 
-    mode = "chat"
-    final_prompt = raw_text
+    # 2. Собираем текст из реплая (если есть), учитывая подписи к медиа
+    if message.reply_to_message:
+        reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    else:
+        reply_text = ""
 
-    for word in CHECK_WORDS:
-        if word in raw_text.lower() or is_forwarded:
-            mode = "inspector"
-            break
+    # 3. Определяем режим: если есть триггер-слово ИЛИ это форвард
+    is_factcheck = any(word in raw_text.lower() for word in CHECK_WORDS)
+
+    if is_factcheck or is_forwarded:
+        mode = "inspector"
+    else:
+        mode = "chat"
+
+    # 4. Формируем финальный промпт
+    # Если есть реплей (контекст), склеиваем его с вопросом/командой юзера
+    if reply_text:
+        final_prompt = f"Контекст: {reply_text}\nВопрос: {raw_text}"
+    else:
+        # Если реплея нет, но это форвард с подписью — текст уже в raw_text
+        final_prompt = raw_text
 
     await process_llm(update, context, final_prompt, user_selected_model.get(user_id),
                       user_selected_provider.get(user_id), mode=mode)
@@ -268,12 +281,21 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
     is_factcheck = any(word in query_lower for word in CHECK_WORDS)
     mode = "inspector" if is_factcheck else "chat"
 
-    reply_text = message.reply_to_message.text if message.reply_to_message else ""
-    final_prompt = f"Контекст: {reply_text}\nВопрос: {user_query}" if reply_text else user_query
+    # Исправленная логика получения текста из реплая
+    if message.reply_to_message:
+        # Проверяем и текст, и подпись под фото/видео
+        reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+        final_prompt = f"Контекст: {reply_text}\nВопрос: {user_query}"
+    else:
+        final_prompt = user_query
 
-    await process_llm(update, context, final_prompt, user_selected_model.get(update.effective_user.id),
-                      user_selected_provider.get(update.effective_user.id), thread_id=message.message_thread_id,
-                      mode=mode)
+    await process_llm(
+        update, context, final_prompt,
+        user_selected_model.get(update.effective_user.id),
+        user_selected_provider.get(update.effective_user.id),
+        thread_id=message.message_thread_id,
+        mode=mode
+    )
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
