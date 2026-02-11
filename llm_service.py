@@ -6,13 +6,14 @@ from google import genai
 from google.genai import types
 from google.genai.types import GenerateContentConfig, Content
 from collections import defaultdict
+from telegram.helpers import escape_markdown
 
 from config import (
     GEMINI_API_KEY, OPEN_ROUTER_API_KEY, WORKER_URL,
     SYSTEM_PROMPT_INSPECTOR, SYSTEM_PROMPT_CHAT, DEFAULT_OPENROUTER_MODELS, GEMINI_MODELS, API_TIMEOUT
 )
 from web_utils import get_web_context
-from utils import format_to_html, get_model_short_name
+from utils import safe_format_to_html, get_model_short_name
 
 # --- Инициализация клиентов ---
 or_client = OpenAI(
@@ -27,39 +28,37 @@ gemini_client = genai.Client(
 )
 
 # --- Глобальные состояния моделей ---
-current_free_or_models = []
+current_free_or_models = [DEFAULT_OPENROUTER_MODELS]
 GEMINI_MODEL_BY_ID = {str(i): m for i, m in enumerate(GEMINI_MODELS)}
 OPENROUTER_MODEL_BY_ID = {}
 chat_histories = defaultdict(list)
 BLACKLISTED_MODELS = set()
 
+
 def fetch_dynamic_models():
     url = "https://openrouter.ai/api/v1/models"
     try:
-        headers = {"Authorization": f"Bearer {OPEN_ROUTER_API_KEY}"}
-        response = requests.get(url, params={"order": "most-popular"}, headers=headers, timeout=10)
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             all_models = response.json().get('data', [])
-            processed = []
+
+            # Начинаем с ручного списка
+            result = [m for m in DEFAULT_OPENROUTER_MODELS]
+
             for m in all_models:
                 m_id = m.get('id', '')
-                if ":free" in m_id and m_id not in BLACKLISTED_MODELS:
-                    desc = m.get('description', '')
-                    size_match = re.search(r'(\d+[.,]?\d*)\s*[Bb]', desc)
-                    size_val = float(size_match.group(1).replace(',', '.')) if size_match else 0.1
-                    processed.append({
-                        'id': m_id,
-                        'size': size_val,
-                        'context': int(m.get('context_length', 0))
-                    })
-            sorted_models = sorted(processed, key=lambda x: (-x['size'], -x['context']))
-            print(sorted_models)
-            return [m['id'] for m in sorted_models[:15]]
+                pricing = m.get('pricing', {})
+                is_free = pricing.get('prompt') == "0" and pricing.get('completion') == "0"
+
+                # Добавляем новые бесплатные модели, которых нет в ручном списке
+                if is_free and m_id not in result and m_id != "openrouter/free":
+                    if m_id not in BLACKLISTED_MODELS:
+                        result.append(m_id)
+
+            return result[:15]
     except Exception as e:
-        print(f"⚠️ Ошибка обновления моделей: {e}")
-    return None
-
-
+        print(f"⚠️ Ошибка обновления: {e}")
+    return DEFAULT_OPENROUTER_MODELS
 # llm_service.py
 
 current_free_or_models = []  # Изначально пустой или с дефолтами
@@ -83,49 +82,51 @@ def update_model_mappings():
 # Добавляем mode="chat" в аргументы функции
 async def process_llm(update, context, query, selected_model=None, selected_provider=None, thread_id=None, mode="chat"):
     chat_id = update.effective_chat.id
-
     system_instruction = SYSTEM_PROMPT_INSPECTOR if mode == "inspector" else SYSTEM_PROMPT_CHAT
-
     status_msg = await context.bot.send_message(chat_id, "⚡ Работаю...", message_thread_id=thread_id)
 
-    # 2. Логика веб-поиска теперь срабатывает ТОЛЬКО если mode == "inspector"
+    # Фактчекинг для инспектора
     final_query = query
     if mode == "inspector":
-        await context.bot.edit_message_text("🔍 Инспектор ищет доказательства...", chat_id, status_msg.message_id)
-        from web_utils import get_web_context
-
-        # Если в запросе есть технические метки — чистим их для поисковика
         search_term = query.replace("ОБЪЕКТ ПРОВЕРКИ:", "").split("\n\nВОПРОС:")[0].strip()
-
         web_data = await get_web_context(search_term)
         if web_data:
             final_query = f"КОНТЕКСТ ИЗ СЕТИ:\n{web_data}\n\nЗАДАЧА: Проведи фактчекинг: {search_term}"
 
-    # 3. Работа с историей (оставляем как было, но используем final_query)
+    # История
     history = chat_histories[chat_id]
     history.append(Content(role="user", parts=[types.Part(text=final_query)]))
-    chat_histories[chat_id] = history[-4:]
+    chat_histories[chat_id] = history[-6:]
 
-    reply_text, used_model, used_prov = None, None, None
-
+    # ОЧЕРЕДЬ МОДЕЛЕЙ: Сначала Trinity (или то что выбрал юзер), потом остальные
     models_to_try = []
-    if selected_model:
+    if selected_model and selected_provider:
         models_to_try.append((selected_provider, selected_model))
 
-    for m in current_free_or_models:
-        if ("openrouter", m) not in models_to_try:
-            models_to_try.append(("openrouter", m))
+    # Добавляем Gemini в конец как надежный бэкап
     for m in GEMINI_MODELS:
         if ("gemini", m) not in models_to_try:
             models_to_try.append(("gemini", m))
 
+    # Добавляем остальные OpenRouter
+    for m in current_free_or_models:
+        if ("openrouter", m) not in models_to_try:
+            models_to_try.append(("openrouter", m))
+
+
+
+    reply_text, used_model, used_prov = None, None, None
+
     for prov, m_path in models_to_try:
-        if m_path in BLACKLISTED_MODELS: continue
+        if m_path in BLACKLISTED_MODELS:
+            continue
+
         try:
             name_short = get_model_short_name(m_path, prov)
             await context.bot.edit_message_text(f"🔄 Пробую {prov}: {name_short}...", chat_id, status_msg.message_id)
 
             if prov == "gemini":
+                # Убедитесь, что в config.py GEMINI_MODELS без префикса "models/"
                 resp = gemini_client.models.generate_content(
                     model=m_path,
                     contents=[Content(role="model", parts=[types.Part(text=system_instruction)])] + history
@@ -135,23 +136,60 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
                 messages = [{"role": "system", "content": system_instruction}]
                 for h in history:
                     messages.append({"role": "user" if h.role == "user" else "assistant", "content": h.parts[0].text})
-                resp = or_client.chat.completions.create(model=m_path, messages=messages)
+
+                resp = or_client.chat.completions.create(
+                    model=m_path,
+                    messages=messages,
+                    temperature=0.7,  # Уменьшаем "фантазии", делаем ответы конкретнее
+                    top_p=0.9,  # Отсекаем совсем маловероятные слова
+                    extra_body={
+                        "repetition_penalty": 1.1  # Прямой запрет модели повторять одни и те же фразы
+                    }
+                )
                 reply_text = resp.choices[0].message.content
 
             if reply_text:
                 used_model, used_prov = name_short, prov.capitalize()
                 break
         except Exception as e:
-            print(f"❌ Модель {m_path} упала: {e}")
-            if prov == "openrouter": BLACKLISTED_MODELS.add(m_path)
+            print(f"❌ Ошибка {m_path}: {e}")
+            # Временно баним только если это ошибка 401/403/404 (модели нет или лимит)
+            if "404" in str(e) or "401" in str(e):
+                BLACKLISTED_MODELS.add(m_path)
 
+    # Отправка результата
     if reply_text:
-        formatted = f"<b>{used_prov}: {used_model}</b>\n\n{format_to_html(reply_text)}"
+        # 1. Экранируем техническую информацию (имя провайдера и модели)
+        # Это важно, чтобы символы типа '-' в названии модели не ломали MarkdownV2
+        header_text = escape_markdown(f"{used_prov}: {used_model}", version=2)
+
+        # 2. Формируем финальное сообщение.
+        # Используем жирный шрифт (*) для заголовка в стиле MarkdownV2
+        formatted = f"*{header_text}*\n\n{safe_format_to_html(reply_text)}"
+
         try:
-            await context.bot.edit_message_text(formatted, chat_id, status_msg.message_id, parse_mode="HTML")
-        except Exception:
-            # Fallback на случай ошибок в HTML
-            await context.bot.edit_message_text(reply_text[:4000], chat_id, status_msg.message_id)
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text=formatted,
+                parse_mode="MarkdownV2"  # МЕНЯЕМ НА MarkdownV2
+            )
+        except Exception as e:
+            print(f"⚠️ Ошибка рендеринга MarkdownV2: {e}")
+            # Если Telegram все равно ругается на разметку, отправляем чистый текст
+            clean_text = escape_markdown(reply_text, version=2)
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text=f"*{header_text}*\n\n{clean_text}",
+                parse_mode="MarkdownV2"
+            )
+
         chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
     else:
-        await context.bot.edit_message_text("❌ Все модели недоступны.", chat_id, status_msg.message_id)
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status_msg.message_id,
+            text=r"❌ *Все модели временно недоступны\. Попробуйте позже\.*",
+            parse_mode="MarkdownV2"
+        )

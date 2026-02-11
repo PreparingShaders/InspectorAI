@@ -18,18 +18,21 @@ WORKER_URL = "https://inspectorgpt.classname1984.workers.dev"
 # ─── Модели по умолчанию (Fallback) ───────────────────────
 # Эти списки используются, если API временно недоступно
 DEFAULT_OPENROUTER_MODELS = [
-    'nvidia/nemotron-3-nano-30b-a3b:free',
-    'mistralai/devstral-2512:free',
+    "arcee-ai/trinity-large-preview:free", # Лидер: умная, живая, русский 10/10
+    "openrouter/pony-alpha",  # Хороший разговорный стиль
+    "stepfun/step-3.5-flash:free",         # Скорость + логика
+    "google/gemma-2-9b-it:free",  # Очень стабильная классика
     'tngtech/deepseek-r1t2-chimera:free',
-    'google/gemma-3-27b-it:free',
-    'z-ai/glm-4.5-air:free',
+    'tngtech/deepseek-r1t-chimera:free',
+    'z-ai/glm-4.5-air:free'
+    "qwen/qwen-2-7b-instruct:free",        # Отличное понимание русского
 ]
 
 GEMINI_MODELS = [
-    "models/gemini-2.0-flash",
-    "models/gemini-2.5-flash-lite",
-    "models/gemini-2.5-flash",
-    "models/gemini-3-flash-preview",
+    "gemini-2.5-flash",        # №1 Скорость + Качество
+    "gemini-3-flash-preview",  # №2 Новое поколение
+    "gemini-2.5-flash-lite",   # №3 Экономия ресурсов
+    "gemini-2.0-flash"         # №4 Проверенная стабильность
 ]
 
 
@@ -52,7 +55,7 @@ SYSTEM_PROMPT_INSPECTOR = (
 )
 
 # ─── Триггеры и настройки бота ──────────────────────────
-TRIGGERS = ["инспектор", "шелупонь", "ботик", "бубен", "андрюха", "андрей", "малыш", "андрей генадьевич"]
+TRIGGERS = ["инспектор", "шелупонь", "ботик", "бубен", "андрюха", "андрей", "малыш", "андрей генадьевич", 'официант']
 CHECK_WORDS = ["чекай", "проверь", "факты", "новости"]
 AUTH_QUESTION = "Тут у нас пароль. Нужно отгадать загадку. Скажи, за какое время разгоняется нива до 100 км/ч"
 FINANCE_WORDS = ["счет", "запиши", "расходы", 'фиксируй']

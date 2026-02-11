@@ -4,6 +4,7 @@ import re
 import asyncio
 from faster_whisper import WhisperModel
 from telegram import LinkPreviewOptions
+import telegramify_markdown
 
 # Инициализируем модель Whisper (base — оптимально для CPU)
 model_whisper = WhisperModel("base", device="cpu", compute_type="int8")
@@ -18,15 +19,19 @@ pre_re = re.compile(r'```(?:.*?)\n?(.*?)```', re.DOTALL)
 def escape_html(content: str) -> str:
     return content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-
-def format_to_html(text: str) -> str:
-    if not text: return ""
-    text = bold_re.sub(lambda m: f'<b>{escape_html(m.group(2))}</b>', text)
-    text = italic_re.sub(lambda m: f'<i>{escape_html(m.group(2))}</i>', text)
-    text = pre_re.sub(lambda m: f'<pre>{escape_html(m.group(1))}</pre>', text)
-    text = code_re.sub(lambda m: f'<code>{escape_html(m.group(1))}</code>', text)
-    return text
-
+def safe_format_to_html(text: str) -> str:
+    if not text:
+        return ""
+    try:
+        # Конвертируем Markdown в HTML, адаптированный под Telegram
+        # Мы используем MarkdownV2, так как он нативнее для Telegram,
+        # но если вы привыкли к HTML, библиотека поддерживает оба формата.
+        converted = telegramify_markdown.markdownify(text)
+        return converted
+    except Exception as e:
+        print(f"⚠️ Ошибка форматирования: {e}")
+        # Если всё упало, возвращаем просто экранированный текст
+        return escape_html(text)
 
 def get_model_short_name(model_path: str, provider: str) -> str:
     if not model_path: return "Auto"
