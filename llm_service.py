@@ -190,6 +190,6 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg.message_id,
-            text="❌ *Все модели временно недоступны\. Попробуйте позже\.*",
+            text=r"❌ *Все модели временно недоступны\. Попробуйте позже\.*",
             parse_mode="MarkdownV2"
         )
