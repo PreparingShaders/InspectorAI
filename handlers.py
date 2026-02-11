@@ -151,7 +151,9 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
     user_id = update.effective_user.id
     message = update.message
     if not message: return
+
     raw_text = voice_text or message.text or message.caption or ""
+
     if user_id not in authorized_users:
         if raw_text.strip().lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
@@ -160,33 +162,31 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
         await message.reply_text(AUTH_QUESTION)
         return
 
-    # 1. Проверяем, является ли сообщение пересланным (форвардом)
+    # ЛОГИКА ОПРЕДЕЛЕНИЯ РЕЖИМА
+    # 1. Проверяем, переслано ли сообщение
     is_forwarded = bool(message.forward_origin)
 
-    # 2. Собираем текст из реплая (если есть), учитывая подписи к медиа
-    if message.reply_to_message:
-        reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-    else:
-        reply_text = ""
+    is_factcheck_trigger = any(word in raw_text.lower() for word in CHECK_WORDS)
 
-    # 3. Определяем режим: если есть триггер-слово ИЛИ это форвард
-    is_factcheck = any(word in raw_text.lower() for word in CHECK_WORDS)
-
-    if is_factcheck or is_forwarded:
+    if is_forwarded or is_factcheck_trigger:
         mode = "inspector"
+        # Используем твой новый статус-текст
+        status_text = "🔍 *Вхожу в режим инспектора: анализирую пересланное...*"
     else:
         mode = "chat"
 
-    # 4. Формируем финальный промпт
-    # Если есть реплей (контекст), склеиваем его с вопросом/командой юзера
-    if reply_text:
-        final_prompt = f"Контекст: {reply_text}\nВопрос: {raw_text}"
-    else:
-        # Если реплея нет, но это форвард с подписью — текст уже в raw_text
-        final_prompt = raw_text
+    # Сбор контекста
+    reply_text = message.reply_to_message.text or message.reply_to_message.caption or "" if message.reply_to_message else ""
+    final_prompt = f"Контекст: {reply_text}\nВопрос: {raw_text}" if reply_text else raw_text
 
-    await process_llm(update, context, final_prompt, user_selected_model.get(user_id),
-                      user_selected_provider.get(user_id), mode=mode)
+    # Передаем статусное сообщение в процесс, если оно было создано
+    # (нужно будет слегка поправить llm_service, чтобы он не создавал второе сообщение, а правил это)
+    await process_llm(
+        update, context, final_prompt,
+        selected_model=user_selected_model.get(user_id),
+        selected_provider=user_selected_provider.get(user_id),
+        mode=mode
+    )
 
 
 async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):

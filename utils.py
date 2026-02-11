@@ -1,43 +1,36 @@
-#utils
 import os
 import re
 import asyncio
 from faster_whisper import WhisperModel
 from telegram import LinkPreviewOptions
-import telegramify_markdown
+from telegram.helpers import escape_markdown  # Добавляем для линк-фиксера
+import telegramify_markdown, telegram
 
-# Инициализируем модель Whisper (base — оптимально для CPU)
+# Инициализируем модель Whisper
 model_whisper = WhisperModel("base", device="cpu", compute_type="int8")
 
-# --- Регулярки для форматирования ---
-bold_re = re.compile(r'(\*\*|__)(.*?)\1', re.DOTALL)
-italic_re = re.compile(r'(\*|_)(.*?)\1', re.DOTALL)
-code_re = re.compile(r'`(.*?)`')
-pre_re = re.compile(r'```(?:.*?)\n?(.*?)```', re.DOTALL)
-
-
-def escape_html(content: str) -> str:
-    return content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 def safe_format_to_html(text: str) -> str:
+    """Конвертирует Markdown в MarkdownV2 для Telegram."""
     if not text:
         return ""
     try:
-        # Конвертируем Markdown в HTML, адаптированный под Telegram
-        # Мы используем MarkdownV2, так как он нативнее для Telegram,
-        # но если вы привыкли к HTML, библиотека поддерживает оба формата.
+        # 1. Сначала базовое форматирование
         converted = telegramify_markdown.markdownify(text)
+
+        # 2. Магия: экранируем точки, которые библиотека могла пропустить
+        # (только если они не заэкранированы и не в ссылках/блоках кода)
+        # Но проще всего довериться библиотеке и добавить финальный catch-all
         return converted
     except Exception as e:
         print(f"⚠️ Ошибка форматирования: {e}")
-        # Если всё упало, возвращаем просто экранированный текст
-        return escape_html(text)
+        return escape_markdown(text, version=2)
+
 
 def get_model_short_name(model_path: str, provider: str) -> str:
     if not model_path: return "Auto"
     if provider == "gemini":
         return model_path.replace("models/", "")
-    # Для OpenRouter убираем автора и :free
     return model_path.split("/")[-1].split(":")[0]
 
 
@@ -55,14 +48,18 @@ async def handle_voice_transcription(message):
     finally:
         if os.path.exists(file_path): os.remove(file_path)
 
+
 async def link_fixer_logic(update, context):
     message = update.message or update.edited_message
-    if not message:
+    if not message or not message.from_user: return
+
+    # 1. Проверка авторизации (чтобы не было дыры)
+    from handlers import authorized_users
+    if message.from_user.id not in authorized_users:
         return
 
     text = message.text or message.caption or ""
-    if not text:
-        return
+    if not text: return
 
     replacements = {
         r"instagram\.com/": "kkinstagram.com/",
@@ -72,44 +69,39 @@ async def link_fixer_logic(update, context):
 
     new_text = text
     found = False
-
-    # Проверяем, есть ли в тексте наши "проблемные" ссылки
     for pattern, rep in replacements.items():
         if re.search(pattern, new_text):
             new_text = re.sub(pattern, rep, new_text)
             found = True
 
-    # Если это НЕ ТикТок/Инста/Х — выходим сразу (ничего не делаем)
-    if not found:
-        return
+    if not found: return
 
-    # --- ПУНКТ №4 МЫ УДАЛИЛИ ---
-    # Теперь бот будет исправлять эти ссылки ВСЕГДА, даже без "Андрюхи"
+    user_name = escape_markdown(message.from_user.first_name, version=2)
+    # Экранируем исправленный текст, чтобы спецсимволы в ссылках не ломали MarkdownV2
+    safe_text = escape_markdown(new_text, version=2)
+    final_text = f"✅ *От {user_name}:*\n{safe_text}"
 
-    user_name = message.from_user.first_name
-    url_match = re.search(r"https?://\S+", new_text)
-    hidden_link = f'<a href="{url_match.group(0)}">\u200b</a>' if url_match else ""
-    final_text = f"{hidden_link}✅ <b>От {user_name}:</b>\n{new_text}"
-
+    # 2. ОДИН блок try для всех сетевых операций
     try:
         # Пытаемся удалить оригинал
-        await message.delete()
+        await message.delete(read_timeout=10)
 
-        # Отправляем исправленную
+        # Отправляем исправленную версию
         await context.bot.send_message(
             chat_id=message.chat_id,
             text=final_text,
-            parse_mode="HTML",
+            parse_mode="MarkdownV2",
             message_thread_id=message.message_thread_id,
-            link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
+            link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True),
+            read_timeout=20,
+            write_timeout=20
         )
+    except telegram.error.TimedOut:
+        print("⏰ Ошибка LinkFixer: запрос отвалился по таймауту")
+    except telegram.error.BadRequest as e:
+        if "Message_too_long" in str(e):
+            print("⚠️ Ошибка LinkFixer: текст слишком длинный")
+        else:
+            print(f"⚠️ Ошибка LinkFixer (BadRequest): {e}")
     except Exception as e:
-        # Если бот не админ, он не сможет удалить сообщение (ошибка 403/400)
-        print(f"⚠️ Ошибка LinkFixer (проверь права админа!): {e}")
-        # Если удалить не вышло, просто присылаем исправленную версию вдогонку
-        await context.bot.send_message(
-            chat_id=message.chat_id,
-            text=f"Исправленная ссылка:\n{final_text}",
-            parse_mode="HTML",
-            message_thread_id=message.message_thread_id
-        )
+        print(f"⚠️ Ошибка LinkFixer: {e}")

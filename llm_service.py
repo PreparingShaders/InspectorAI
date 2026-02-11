@@ -1,6 +1,6 @@
 #llm_service
 import re
-import requests
+import requests, telegram
 from openai import OpenAI
 from google import genai
 from google.genai import types
@@ -59,10 +59,10 @@ def fetch_dynamic_models():
     except Exception as e:
         print(f"⚠️ Ошибка обновления: {e}")
     return DEFAULT_OPENROUTER_MODELS
+
 # llm_service.py
 
 current_free_or_models = []  # Изначально пустой или с дефолтами
-
 
 def update_model_mappings():
     global current_free_or_models, OPENROUTER_MODEL_BY_ID
@@ -77,21 +77,41 @@ def update_model_mappings():
         OPENROUTER_MODEL_BY_ID.clear()
         for i, m in enumerate(current_free_or_models):
             OPENROUTER_MODEL_BY_ID[str(i + 100)] = m
-# llm_service.py
 
-# Добавляем mode="chat" в аргументы функции
+
 async def process_llm(update, context, query, selected_model=None, selected_provider=None, thread_id=None, mode="chat"):
     chat_id = update.effective_chat.id
     system_instruction = SYSTEM_PROMPT_INSPECTOR if mode == "inspector" else SYSTEM_PROMPT_CHAT
-    status_msg = await context.bot.send_message(chat_id, "⚡ Работаю...", message_thread_id=thread_id)
 
-    # Фактчекинг для инспектора
+    # ОТПРАВЛЯЕМ СТАТУС БЕЗ parse_mode
+    status_text = "⚡ Работаю..." if mode != "inspector" else "🔍 Вхожу в режим инспектора: анализирую..."
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=status_text,
+        message_thread_id=thread_id
+        # parse_mode УБРАН
+    )
+
     final_query = query
     if mode == "inspector":
+        # РЕДАКТИРУЕМ СТАТУС БЕЗ parse_mode
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status_msg.message_id,
+            text="🌐 Ищу информацию в интернете..."
+        )
+
         search_term = query.replace("ОБЪЕКТ ПРОВЕРКИ:", "").split("\n\nВОПРОС:")[0].strip()
         web_data = await get_web_context(search_term)
+
         if web_data:
-            final_query = f"КОНТЕКСТ ИЗ СЕТИ:\n{web_data}\n\nЗАДАЧА: Проведи фактчекинг: {search_term}"
+            # СНОВА БЕЗ parse_mode
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text="🧠 Данные получены. Формирую ответ..."
+            )
+            final_query = f"ДАННЫЕ ИЗ СЕТИ:\n{web_data}\n\nЗАПРОС:\n{query}"
 
     # История
     history = chat_histories[chat_id]
@@ -158,38 +178,40 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
                 BLACKLISTED_MODELS.add(m_path)
 
     # Отправка результата
+    # ... (после получения reply_text от модели)
     if reply_text:
-        # 1. Экранируем техническую информацию (имя провайдера и модели)
-        # Это важно, чтобы символы типа '-' в названии модели не ломали MarkdownV2
-        header_text = escape_markdown(f"{used_prov}: {used_model}", version=2)
+        # Экранируем заголовок
+        clean_header = escape_markdown(f"{used_prov}: {used_model}", version=2)
+        # Форматируем тело
+        formatted_body = safe_format_to_html(reply_text)
 
-        # 2. Формируем финальное сообщение.
-        # Используем жирный шрифт (*) для заголовка в стиле MarkdownV2
-        formatted = f"*{header_text}*\n\n{safe_format_to_html(reply_text)}"
+        final_text = f"*{clean_header}*\n\n{formatted_body}"
 
         try:
+            # Пытаемся отправить красиво
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=status_msg.message_id,
-                text=formatted,
-                parse_mode="MarkdownV2"  # МЕНЯЕМ НА MarkdownV2
-            )
-        except Exception as e:
-            print(f"⚠️ Ошибка рендеринга MarkdownV2: {e}")
-            # Если Telegram все равно ругается на разметку, отправляем чистый текст
-            clean_text = escape_markdown(reply_text, version=2)
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_msg.message_id,
-                text=f"*{header_text}*\n\n{clean_text}",
+                text=final_text,
                 parse_mode="MarkdownV2"
             )
-
-        chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
-    else:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_msg.message_id,
-            text=r"❌ *Все модели временно недоступны\. Попробуйте позже\.*",
-            parse_mode="MarkdownV2"
-        )
+        except Exception as e:
+            # ПЛАН Б: Если MarkdownV2 «взрывается», шлем простым текстом
+            print(f"❌ Критическая ошибка разметки: {e}")
+            try:
+                # Просто экранируем ВЕСЬ текст целиком, без сложного форматирования
+                fallback_text = escape_markdown(f"{used_prov}: {used_model}\n\n{reply_text}", version=2)
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=fallback_text,
+                    parse_mode="MarkdownV2"
+                )
+            except Exception as e2:
+                # ПЛАН В: Вообще без разметки, если даже экранирование не спасло
+                print(f"❌ Даже запасной вариант упал: {e2}")
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"⚠️ Ошибка разметки. Ответ:\n\n{reply_text[:1000]}"
+                )
