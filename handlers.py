@@ -147,11 +147,37 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_private(update, context, voice_text=text)
 
 
+import time
+
+
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
     user_id = update.effective_user.id
     message = update.message
     if not message: return
+
+    # 1. Извлекаем текст из ТЕКУЩЕГО сообщения (текст, подпись к видео/фото или голос)
+    # Порядок важен: голос > текст > подпись
     raw_text = voice_text or message.text or message.caption or ""
+
+    # Если это "пустое" сообщение из альбома (видео без подписи) — игнорируем
+    if not raw_text:
+        return
+
+    # --- ЗАЩИТА ОТ ДУБЛЕЙ (АЛЬБОМОВ) ---
+    current_time = time.time()
+    last_text = context.user_data.get('last_msg_text', "")
+    last_msg_id = context.user_data.get('last_msg_id', 0)
+    last_time = context.user_data.get('last_msg_time', 0)
+
+    if raw_text == last_text and message.message_id != last_msg_id and (current_time - last_time) < 1.5:
+        return
+
+    context.user_data['last_msg_text'] = raw_text
+    context.user_data['last_msg_id'] = message.message_id
+    context.user_data['last_msg_time'] = current_time
+    # ----------------------------------
+
+    # Блок авторизации (теперь user_id на месте)
     if user_id not in authorized_users:
         if raw_text.strip().lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
@@ -160,33 +186,30 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
         await message.reply_text(AUTH_QUESTION)
         return
 
-    # 1. Проверяем, является ли сообщение пересланным (форвардом)
+    # Определение режима
     is_forwarded = bool(message.forward_origin)
+    is_factcheck_trigger = any(word in raw_text.lower() for word in CHECK_WORDS)
+    mode = "inspector" if (is_forwarded or is_factcheck_trigger) else "chat"
 
-    # 2. Собираем текст из реплая (если есть), учитывая подписи к медиа
+    # 2. Сбор контекста ТОЛЬКО если есть Reply (ответ на другое сообщение)
+    context_text = ""
     if message.reply_to_message:
-        reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-    else:
-        reply_text = ""
+        # Берем текст или подпись из сообщения, на которое ответили
+        context_text = message.reply_to_message.text or message.reply_to_message.caption or ""
 
-    # 3. Определяем режим: если есть триггер-слово ИЛИ это форвард
-    is_factcheck = any(word in raw_text.lower() for word in CHECK_WORDS)
-
-    if is_factcheck or is_forwarded:
-        mode = "inspector"
+    # Формируем финальный промпт: контекст + текущее сообщение
+    if context_text:
+        final_prompt = f"КОНТЕКСТ ПРЕДЫДУЩЕГО СООБЩЕНИЯ:\n{context_text}\n\nТЕКУЩИЙ ЗАПРОС:\n{raw_text}"
     else:
-        mode = "chat"
-
-    # 4. Формируем финальный промпт
-    # Если есть реплей (контекст), склеиваем его с вопросом/командой юзера
-    if reply_text:
-        final_prompt = f"Контекст: {reply_text}\nВопрос: {raw_text}"
-    else:
-        # Если реплея нет, но это форвард с подписью — текст уже в raw_text
+        # Если реплая нет, просто шлем текущий текст (даже если это подпись к видео)
         final_prompt = raw_text
 
-    await process_llm(update, context, final_prompt, user_selected_model.get(user_id),
-                      user_selected_provider.get(user_id), mode=mode)
+    await process_llm(
+        update, context, final_prompt,
+        selected_model=user_selected_model.get(user_id),
+        selected_provider=user_selected_provider.get(user_id),
+        mode=mode
+    )
 
 
 async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
