@@ -60,7 +60,6 @@ def fetch_dynamic_models():
         print(f"⚠️ Ошибка обновления: {e}")
     return DEFAULT_OPENROUTER_MODELS
 
-# llm_service.py
 
 current_free_or_models = []  # Изначально пустой или с дефолтами
 
@@ -115,7 +114,7 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
 
     # История
     history = chat_histories[chat_id]
-    history.append(Content(role="user", parts=[types.Part(text=final_query)]))
+    history.append(Content(role="user", parts=[types.Part(text=query)]))
     chat_histories[chat_id] = history[-6:]
 
     # ОЧЕРЕДЬ МОДЕЛЕЙ: Сначала Trinity (или то что выбрал юзер), потом остальные
@@ -133,44 +132,53 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
         if ("openrouter", m) not in models_to_try:
             models_to_try.append(("openrouter", m))
 
-
-
     reply_text, used_model, used_prov = None, None, None
-
     for prov, m_path in models_to_try:
         if m_path in BLACKLISTED_MODELS:
             continue
-
         try:
             name_short = get_model_short_name(m_path, prov)
-            await context.bot.edit_message_text(f"🔄 Пробую {prov}: {name_short}...", chat_id, status_msg.message_id)
-
+            # ИСПРАВЛЕНО: Добавлены именованные аргументы и убран Markdown, чтобы не падало
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text=f"🔄 Пробую {prov}: {name_short}..."
+            )
             if prov == "gemini":
-                # Убедитесь, что в config.py GEMINI_MODELS без префикса "models/"
+                # ВАЖНО: для Gemini мы передаем final_query (с данными из сети),
+                # но в общую историю chat_histories это не сохраняем!
+                current_contents = [Content(role="model", parts=[types.Part(text=system_instruction)])]
+                # Берем историю (кроме последнего элемента) и добавляем текущий расширенный запрос
+                current_contents += chat_histories[chat_id][:-1]
+                current_contents.append(Content(role="user", parts=[types.Part(text=final_query)]))
                 resp = gemini_client.models.generate_content(
                     model=m_path,
-                    contents=[Content(role="model", parts=[types.Part(text=system_instruction)])] + history
+                    contents=current_contents
                 )
                 reply_text = resp.text
             else:
+                # Для OpenRouter аналогично
                 messages = [{"role": "system", "content": system_instruction}]
-                for h in history:
-                    messages.append({"role": "user" if h.role == "user" else "assistant", "content": h.parts[0].text})
-
+                # История без последнего сообщения
+                for h in chat_histories[chat_id][:-1]:
+                    messages.append(
+                        {"role": "user" if h.role == "user" else "assistant", "content": h.parts[0].text})
+                # Добавляем текущий расширенный запрос
+                messages.append({"role": "user", "content": final_query})
                 resp = or_client.chat.completions.create(
                     model=m_path,
                     messages=messages,
-                    temperature=0.7,  # Уменьшаем "фантазии", делаем ответы конкретнее
-                    top_p=0.9,  # Отсекаем совсем маловероятные слова
-                    extra_body={
-                        "repetition_penalty": 1.1  # Прямой запрет модели повторять одни и те же фразы
-                    }
+                    temperature=0.7,
+                    extra_body={"repetition_penalty": 1.1}
                 )
                 reply_text = resp.choices[0].message.content
-
             if reply_text:
                 used_model, used_prov = name_short, prov.capitalize()
+                # После успешного ответа, добавляем ЕГО в историю
+                chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
                 break
+
+
         except Exception as e:
             print(f"❌ Ошибка {m_path}: {e}")
             # Временно баним только если это ошибка 401/403/404 (модели нет или лимит)
@@ -196,22 +204,20 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
                 parse_mode="MarkdownV2"
             )
         except Exception as e:
-            # ПЛАН Б: Если MarkdownV2 «взрывается», шлем простым текстом
             print(f"❌ Критическая ошибка разметки: {e}")
             try:
-                # Просто экранируем ВЕСЬ текст целиком, без сложного форматирования
+                # План Б: Экранируем всё и шлем полный текст (до 4000 символов)
                 fallback_text = escape_markdown(f"{used_prov}: {used_model}\n\n{reply_text}", version=2)
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=status_msg.message_id,
-                    text=fallback_text,
+                    text=fallback_text[:4090],  # Telegram limit
                     parse_mode="MarkdownV2"
                 )
-            except Exception as e2:
-                # ПЛАН В: Вообще без разметки, если даже экранирование не спасло
-                print(f"❌ Даже запасной вариант упал: {e2}")
+            except:
+                # План В: Если даже экранирование сбоит — шлем КРАСИВЫМ простым текстом без parse_mode
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=status_msg.message_id,
-                    text=f"⚠️ Ошибка разметки. Ответ:\n\n{reply_text[:1000]}"
+                    text=f"📋 Ответ (без разметки):\n\n{reply_text}"  # Убрали срез [:1000]
                 )
