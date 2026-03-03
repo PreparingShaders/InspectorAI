@@ -3,7 +3,11 @@ import re
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+import time
+from llm_service import process_llm
 
+from database import save_profile, get_user_status, update_daily_log
+from config import NUTRITION_TRIGGERS # Убедись, что добавил это в config.py
 # Финансы
 from finance import (
     register_user, apply_expense,
@@ -30,6 +34,83 @@ user_selected_provider = {}  # {user_id: "gemini" или "openrouter"}
 
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+import io
+from database import get_user_status, update_daily_log
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    message = update.message
+
+    # 1. Проверка авторизации (твой стандартный код)
+    if user_id not in authorized_users:
+        await message.reply_text(AUTH_QUESTION)
+        return
+
+    # 2. Получаем данные профиля из базы
+    from database import get_user_status
+    user_data = get_user_status(user_id)
+
+    if not user_data:
+        await message.reply_text("⚠️ Сначала заполни профиль: /profile")
+        return
+
+    # 3. Скачиваем фото в память (в байты)
+    photo_file = await message.photo[-1].get_file()
+    photo_bytes = await photo_file.download_as_bytearray()
+
+    # 4. Формируем промпт для ИИ
+    nutrition_prompt = f"""
+    Проанализируй фото еды. 
+    Твоя цель: {user_data['target_calories']} ккал. 
+    Уже съедено: {user_data['consumed_calories'] or 0} ккал.
+
+    Ответь как Джарвис: назови блюдо, оцени КБЖУ и скажи, сколько осталось лимита.
+    В конце добавь техническую строку: [ADD_DB: калории, белки, жиры, углеводы]
+    """
+
+    await process_llm(
+        update,
+        context,
+        query=nutrition_prompt,
+        image_data=photo_bytes,
+        mode="nutrition"
+    )
+
+
+
+
+
+def calculate_targets(weight, height, age, gender, activity):
+    """
+    Расчет по формуле Миффлина-Сан Жеора.
+    Рекомпозиция: Белок 2г/кг, Жиры 0.8г/кг, Дефицит 5%.
+    """
+    # Расчет BMR (Базовый обмен веществ)
+    if gender.lower() in ['муж', 'м', 'male']:
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+    else:
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+
+    # TDEE (Общие энергозатраты с учетом активности)
+    tdee = bmr * activity
+
+    # Цель для рекомпозиции (небольшой дефицит для сжигания жира)
+    target_cal = int(tdee * 0.95)
+
+    # Макронутриенты
+    proteins = int(weight * 2.0)  # Основа для мышц
+    fats = int(weight * 0.8)  # Для гормонов
+    # Остаток калорий отдаем под углеводы (1г углей = 4ккал)
+    carbs = int((target_cal - (proteins * 4) - (fats * 9)) / 4)
+
+    return {
+        'bmr': bmr, 'tdee': tdee,
+        'cal': target_cal, 'prot': proteins, 'fat': fats, 'carb': carbs
+    }
+
+
 async def send_participant_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     payer_id = update.effective_user.id
@@ -147,7 +228,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_private(update, context, voice_text=text)
 
 
-import time
 
 
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
@@ -155,13 +235,55 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
     message = update.message
     if not message: return
 
-    # 1. Извлекаем текст из ТЕКУЩЕГО сообщения (текст, подпись к видео/фото или голос)
-    # Порядок важен: голос > текст > подпись
     raw_text = voice_text or message.text or message.caption or ""
+    if not raw_text and not message.photo: return
 
-    # Если это "пустое" сообщение из альбома (видео без подписи) — игнорируем
-    if not raw_text:
-        return
+    # --- 1. ПРОВЕРКА СОСТОЯНИЯ (АНКЕТА) ---
+    if context.user_data.get('nutrition_state') == 'WAITING_PROFILE_DATA':
+        try:
+            # Парсим строку: 30, муж, 180, 90, 80, 1.2
+            parts = [p.strip() for p in raw_text.split(',')]
+            if len(parts) < 6:
+                await message.reply_text("⚠️ Нужно 6 параметров через запятую! Попробуй еще раз.")
+                return
+
+            age = int(parts[0])
+            gender = parts[1].lower()
+            height = float(parts[2])
+            weight = float(parts[3])
+            target_w = float(parts[4])
+            activity = float(parts[5])
+
+            # Считаем нормы
+            res = calculate_targets(weight, height, age, gender, activity)
+
+            # Сохраняем в SQLite (импортируй save_profile из database)
+            from database import save_profile
+            profile_data = {
+                'age': age, 'gender': gender, 'height': height,
+                'start_weight': weight, 'target_weight': target_w,
+                'activity_level': activity, 'bmr': res['bmr'], 'tdee': res['tdee'],
+                'target_calories': res['cal'], 'target_proteins': res['prot'],
+                'target_fats': res['fat'], 'target_carbs': res['carb']
+            }
+            save_profile(user_id, profile_data)
+
+            # Сбрасываем состояние
+            context.user_data.pop('nutrition_state', None)
+
+            await message.reply_text(
+                f"✅ <b>Джарвис: Профиль настроен!</b>\n\n"
+                f"Ваш BMR: <b>{int(res['bmr'])} ккал</b>\n"
+                f"Цель (Ккал): <b>{res['cal']}</b>\n"
+                f"Белки: <b>{res['prot']}г</b> | Жиры: <b>{res['fat']}г</b> | Угли: <b>{res['carb']}г</b>\n\n"
+                f"Теперь я буду учитывать это при анализе ваших фото еды.",
+                parse_mode="HTML"
+            )
+            return
+        except Exception as e:
+            logging.error(f"Ошибка парсинга анкеты: {e}")
+            await message.reply_text("❌ Ошибка в данных. Проверь, чтобы были только числа (кроме пола).")
+            return
 
     # --- ЗАЩИТА ОТ ДУБЛЕЙ (АЛЬБОМОВ) ---
     current_time = time.time()
@@ -383,3 +505,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_selected_model[user_id], user_selected_provider[user_id] = model_path, provider
             name = get_model_short_name(model_path, provider)
             await query.edit_message_text(f"🎯 Выбрана модель: <b>{name}</b>", parse_mode="HTML")
+
+async def profile_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Триггер для начала заполнения анкеты"""
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.message.reply_text(AUTH_QUESTION)
+        return
+
+    context.user_data['nutrition_state'] = 'WAITING_PROFILE_DATA'
+    await update.message.reply_text(
+        "📝 <b>Введите данные через запятую:</b>\n"
+        "<code>Возраст, Пол (муж/жен), Рост, Вес, Цель (вес), Активность</code>\n\n"
+        "<b>Пример:</b> <code>28, муж, 182, 95, 85, 1.2</code>",
+        parse_mode="HTML"
+    )

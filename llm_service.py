@@ -7,6 +7,8 @@ from google.genai import types
 from google.genai.types import GenerateContentConfig, Content
 from collections import defaultdict
 from telegram.helpers import escape_markdown
+from PIL import Image
+import io
 
 from config import (
     GEMINI_API_KEY, OPEN_ROUTER_API_KEY, WORKER_URL,
@@ -78,9 +80,13 @@ def update_model_mappings():
             OPENROUTER_MODEL_BY_ID[str(i + 100)] = m
 
 
-async def process_llm(update, context, query, selected_model=None, selected_provider=None, thread_id=None, mode="chat"):
+async def process_llm(update, context, query, selected_model=None, selected_provider=None, thread_id=None, mode="chat", image_data=None):
     chat_id = update.effective_chat.id
-    system_instruction = SYSTEM_PROMPT_INSPECTOR if mode == "inspector" else SYSTEM_PROMPT_CHAT
+
+    if mode == "nutrition":
+        system_instruction = "Ты — ИИ-нутрициолог Джарвис. Твоя задача — анализировать фото еды, определять КБЖУ и давать советы на основе лимитов пользователя."
+    else:
+        system_instruction = SYSTEM_PROMPT_INSPECTOR if mode == "inspector" else SYSTEM_PROMPT_CHAT
 
     # ОТПРАВЛЯЕМ СТАТУС БЕЗ parse_mode
     status_text = "⚡ Работаю..." if mode != "inspector" else "🔍 Вхожу в режим инспектора: анализирую..."
@@ -122,66 +128,72 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
     if selected_model and selected_provider:
         models_to_try.append((selected_provider, selected_model))
 
-    # Добавляем Gemini в конец как надежный бэкап
-    for m in GEMINI_MODELS:
-        if ("gemini", m) not in models_to_try:
-            models_to_try.append(("gemini", m))
-
-    # Добавляем остальные OpenRouter
-    for m in current_free_or_models:
-        if ("openrouter", m) not in models_to_try:
-            models_to_try.append(("openrouter", m))
+    # ### Если передано фото, ставим Gemini в начало списка, так как OpenRouter Free фото не потянет
+    if image_data:
+        models_to_try = [("gemini", m) for m in GEMINI_MODELS] + models_to_try
+    else:
+        for m in GEMINI_MODELS:
+            if ("gemini", m) not in models_to_try:
+                models_to_try.append(("gemini", m))
+        for m in current_free_or_models:
+            if ("openrouter", m) not in models_to_try:
+                models_to_try.append(("openrouter", m))
 
     reply_text, used_model, used_prov = None, None, None
     for prov, m_path in models_to_try:
-        if m_path in BLACKLISTED_MODELS:
+        if m_path in BLACKLISTED_MODELS: continue
+
+        # ### Пропускаем OpenRouter если пришло фото
+        if prov == "openrouter" and image_data:
             continue
+
         try:
             name_short = get_model_short_name(m_path, prov)
-            # ИСПРАВЛЕНО: Добавлены именованные аргументы и убран Markdown, чтобы не падало
             await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_msg.message_id,
+                chat_id=chat_id, message_id=status_msg.message_id,
                 text=f"🔄 Пробую {prov}: {name_short}..."
             )
+
             if prov == "gemini":
-                # ВАЖНО: для Gemini мы передаем final_query (с данными из сети),
-                # но в общую историю chat_histories это не сохраняем!
+                # ### ФОРМИРУЕМ ЧАСТИ ЗАПРОСА (Мультимодальность)
+                user_parts = [types.Part(text=final_query)]
+                if image_data:
+                    user_parts.append(types.Part.from_bytes(
+                        data=bytes(image_data),
+                        mime_type="image/jpeg"
+                    ))
+
                 current_contents = [Content(role="model", parts=[types.Part(text=system_instruction)])]
-                # Берем историю (кроме последнего элемента) и добавляем текущий расширенный запрос
                 current_contents += chat_histories[chat_id][:-1]
-                current_contents.append(Content(role="user", parts=[types.Part(text=final_query)]))
+                # Добавляем наш запрос с фото (если оно есть)
+                current_contents.append(Content(role="user", parts=user_parts))
+
                 resp = gemini_client.models.generate_content(
                     model=m_path,
                     contents=current_contents
                 )
                 reply_text = resp.text
             else:
-                # Для OpenRouter аналогично
+                # Стандартный запрос к OpenRouter (без изменений)
                 messages = [{"role": "system", "content": system_instruction}]
-                # История без последнего сообщения
                 for h in chat_histories[chat_id][:-1]:
-                    messages.append(
-                        {"role": "user" if h.role == "user" else "assistant", "content": h.parts[0].text})
-                # Добавляем текущий расширенный запрос
+                    messages.append({"role": "user" if h.role == "user" else "assistant", "content": h.parts[0].text})
                 messages.append({"role": "user", "content": final_query})
+
                 resp = or_client.chat.completions.create(
                     model=m_path,
                     messages=messages,
-                    temperature=0.7,
-                    extra_body={"repetition_penalty": 1.1}
+                    temperature=0.7
                 )
                 reply_text = resp.choices[0].message.content
+
             if reply_text:
                 used_model, used_prov = name_short, prov.capitalize()
-                # После успешного ответа, добавляем ЕГО в историю
                 chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
                 break
 
-
         except Exception as e:
             print(f"❌ Ошибка {m_path}: {e}")
-            # Временно баним только если это ошибка 401/403/404 (модели нет или лимит)
             if "404" in str(e) or "401" in str(e):
                 BLACKLISTED_MODELS.add(m_path)
 
