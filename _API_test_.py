@@ -41,21 +41,34 @@ def test_openrouter():
         print(f"❌ ОШИБКА OpenRouter: {e}")
 
 
-def test_gemini():
-    print("\n[2/2] ТЕСТ: Gemini...")
-    try:
-        # Используем стандартную модель
-        model_name = "models/gemini-2.5-flash"
+def test_gemini_models():
+    print("\n[2/2] ТЕСТ: Список Gemini...")
 
-        response = gemini_client.models.generate_content(
-            model=model_name,
-            contents="Скажи 'Gemini работает', если ты меня слышишь."
-        )
-        print("✅ УСПЕХ!")
-        print(f"Ответ модели ({model_name}): {response.text.strip()}")
-    except Exception as e:
-        print(f"❌ ОШИБКА Gemini: {e}")
+    # Твой список для проверки
+    GEMINI_MODELS = [
+        "gemini-2.5-flash",
+        "gemini-3.1-flash-image-preview",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash"
+    ]
 
+    for model_id in GEMINI_MODELS:
+        print(f"--- Проверяю: {model_id} ---")
+        try:
+            # Важно: добавляем префикс models/, если его нет,
+            # так как SDK иногда требует полный путь
+            full_path = f"models/{model_id}" if not model_id.startswith("models/") else model_id
+
+            response = gemini_client.models.generate_content(
+                model=full_path,
+                contents="Привет! Подтверди свою готовность фразой 'Модель активна'."
+            )
+            print(f"✅ УСПЕХ! Ответ: {response.text.strip()}")
+        except Exception as e:
+            # Если 404 — значит Google еще не выкатил это имя в общий доступ
+            # Если 403 — проблема с ключом или регионом
+            print(f"❌ ОШИБКА для {model_id}: {e}")
 
 # ─── ЗАПУСК ────────────────────────────────────────────────────────────────
 
@@ -64,7 +77,7 @@ if __name__ == "__main__":
     print("=" * 50)
 
     test_openrouter()
-    test_gemini()
+    test_gemini_models()
 
     print("\n" + "=" * 50)
     print("Тестирование завершено.")

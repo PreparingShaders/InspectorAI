@@ -12,5 +12,5 @@ pytest
 pytest-mock
 pytest-asyncio
 telegramify-markdown
-PIL
+Pillow
 

@@ -5,9 +5,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 import time
 from llm_service import process_llm
+from database import get_user_status, update_daily_log  # Добавь импорт нужной функции
 
 from database import save_profile, get_user_status, update_daily_log
 from config import NUTRITION_TRIGGERS # Убедись, что добавил это в config.py
+
 # Финансы
 from finance import (
     register_user, apply_expense,
@@ -33,44 +35,39 @@ user_selected_model = {}  # {user_id: model_path}
 user_selected_provider = {}  # {user_id: "gemini" или "openrouter"}
 
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
-import io
-from database import get_user_status, update_daily_log
-
-
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message = update.message
 
-    # 1. Проверка авторизации (твой стандартный код)
     if user_id not in authorized_users:
         await message.reply_text(AUTH_QUESTION)
         return
 
-    # 2. Получаем данные профиля из базы
-    from database import get_user_status
+    # 1. Получаем данные профиля
     user_data = get_user_status(user_id)
-
     if not user_data:
         await message.reply_text("⚠️ Сначала заполни профиль: /profile")
         return
 
-    # 3. Скачиваем фото в память (в байты)
+    # 2. Скачиваем фото
     photo_file = await message.photo[-1].get_file()
     photo_bytes = await photo_file.download_as_bytearray()
 
-    # 4. Формируем промпт для ИИ
-    nutrition_prompt = f"""
-    Проанализируй фото еды. 
-    Твоя цель: {user_data['target_calories']} ккал. 
-    Уже съедено: {user_data['consumed_calories'] or 0} ккал.
+    # 3. Формируем промпт
+    consumed_cal = user_data['consumed_calories'] or 0
 
-    Ответь как Джарвис: назови блюдо, оцени КБЖУ и скажи, сколько осталось лимита.
-    В конце добавь техническую строку: [ADD_DB: калории, белки, жиры, углеводы]
+    nutrition_prompt = f"""
+    Ты — Джарвис. Проанализируй фото еды.
+    Цель пользователя: {user_data['target_calories']} ккал.
+    Уже съедено: {consumed_cal} ккал.
+
+    1. Оцени КБЖУ блюда.
+    2. Выдай краткий анализ.
+    3. В САМОМ КОНЦЕ добавь строку: [ADD_DB: калории, белки, жиры, углеводы] (только числа).
     """
 
-    await process_llm(
+    # 4. Вызываем ИИ
+    response_text = await process_llm(
         update,
         context,
         query=nutrition_prompt,
@@ -78,7 +75,49 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mode="nutrition"
     )
 
+    # 5. ПАРСИНГ И ОБНОВЛЕНИЕ БАЗЫ
+    if response_text:
+        # Ищем техническую строку
+        match = re.search(r"\[ADD_DB:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)\]", response_text)
 
+        if match:
+            # Конвертируем данные
+            new_cal, new_prot, new_fat, new_carb = map(lambda x: int(float(x)), match.groups())
+
+            # Записываем в базу
+            update_daily_log(user_id, calories=new_cal, proteins=new_prot, fats=new_fat, carbs=new_carb)
+
+            # Считаем остатки (total = было в базе + то что добавили)
+            total_c = (user_data['consumed_calories'] or 0) + new_cal
+            total_p = (user_data['consumed_proteins'] or 0) + new_prot
+            total_f = (user_data['consumed_fats'] or 0) + new_fat
+            total_carb = (user_data['consumed_carbs'] or 0) + new_carb
+
+            rem_c = (user_data['target_calories'] or 0) - total_c
+            rem_p = (user_data['target_proteins'] or 0) - total_p
+            rem_f = (user_data['target_fats'] or 0) - total_f
+            rem_carb = (user_data['target_carbs'] or 0) - total_carb
+
+            # Функция для красивого отображения перебора
+            def fmt(val):
+                return f"{val}" if val >= 0 else f"⚠️ {val} (перебор!)"
+
+            # 6. ВЫВОД ОТЧЕТА (ОБЯЗАТЕЛЬНО ВНУТРИ if match)
+            await message.reply_text(
+                f"✅ **Данные внесены!**\n\n"
+                f"📊 **Остаток на сегодня:**\n"
+                f"🔥 Калории: `{fmt(rem_c)}` ккал\n"
+                f"🥩 Белки: `{fmt(rem_p)}` г\n"
+                f"🥑 Жиры: `{fmt(rem_f)}` г\n"
+                f"🍞 Углеводы: `{fmt(rem_carb)}` г",
+                parse_mode="Markdown"
+            )
+        else:
+            # Если ИИ ответил текстом, но забыл прислать [ADD_DB:...]
+            await message.reply_text(response_text)
+            await message.reply_text("⚠️ ИИ не смог выдать точные цифры КБЖУ. Попробуй другое фото.")
+    else:
+        await message.reply_text("❌ Не удалось получить ответ от ИИ.")
 
 
 

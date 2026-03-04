@@ -29,10 +29,12 @@ DEFAULT_OPENROUTER_MODELS = [
 ]
 
 GEMINI_MODELS = [
-    "gemini-2.5-flash",        # №1 Скорость + Качество
-    "gemini-3-flash-preview",  # №2 Новое поколение
-    "gemini-2.5-flash-lite",   # №3 Экономия ресурсов
-    "gemini-2.0-flash"         # №4 Проверенная стабильность
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash-image',
+    "gemini-2.5-flash",        # Твой основной выбор. Лучшее соотношение скорости и зрения.
+    "gemini-3.1-flash-image-preview", # Самая новая Vision-модель (из серии Nano Banana 2).
+    "gemini-2.0-flash",        # Очень стабильная, проверенная версия.
+    "gemini-2.0-flash-lite",   # Облегченная, если нужна мгновенная реакция.
 ]
 
 # ─── Промпты ─────────────────────────────────────────────

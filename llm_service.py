@@ -233,3 +233,6 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
                     message_id=status_msg.message_id,
                     text=f"📋 Ответ (без разметки):\n\n{reply_text}"  # Убрали срез [:1000]
                 )
+
+        return reply_text
+    return None
