@@ -26,7 +26,7 @@ from llm_service import (
 from utils import handle_voice_transcription, get_model_short_name
 from config import (
     CORRECT_PASSWORD, AUTH_QUESTION, TRIGGERS, CHECK_WORDS,
-    GEMINI_MODELS, FINANCE_WORDS
+    GEMINI_MODELS, FINANCE_WORDS, NUTRITION_TRIGGERS
 )
 
 # Состояния пользователей
@@ -38,56 +38,77 @@ user_selected_provider = {}  # {user_id: "gemini" или "openrouter"}
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message = update.message
+    user_data = {}
 
+    if not message: return
+
+    # --- 0. ПРЕДОХРАНИТЕЛЬ ---
+    is_waiting = context.user_data.get('waiting_for_food', False)
+    start_time = context.user_data.get('food_mode_timestamp', 0)
+
+    # Если режим НЕ активен ИЛИ прошло больше 5 минут — ВЫХОДИМ
+    if not is_waiting or (time.time() - start_time > 300):
+        if is_waiting:
+            context.user_data['waiting_for_food'] = False
+            await message.reply_text("⏰ Время ожидания фото вышло. Напишите 'я поел' снова.")
+        return  # Важно: return должен быть здесь, чтобы игнорировать левые фото
+
+    # --- 1. АВТОРИЗАЦИЯ И ПРОФИЛЬ (Выносим из условий IF выше) ---
     if user_id not in authorized_users:
         await message.reply_text(AUTH_QUESTION)
         return
 
-    # 1. Получаем данные профиля
-    user_data = get_user_status(user_id)
-    if not user_data:
+    db_row = get_user_status(user_id)
+    if not db_row:
         await message.reply_text("⚠️ Сначала заполни профиль: /profile")
         return
 
-    # 2. Скачиваем фото
-    photo_file = await message.photo[-1].get_file()
-    photo_bytes = await photo_file.download_as_bytearray()
+    # Превращаем Row в словарь, чтобы работал .get()
+    user_data = dict(db_row)
 
-    # 3. Формируем промпт
-    consumed_cal = user_data['consumed_calories'] or 0
+    # --- 2. СКАЧИВАНИЕ ФОТО ---
+    try:
+        photo_file = await message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+    except Exception as e:
+        logging.error(f"Ошибка скачивания: {e}")
+        return
 
+    # ВАЖНО: Сбрасываем флаг сразу, чтобы следующее фото не считалось едой без команды
+    context.user_data['waiting_for_food'] = False
+
+    # --- 3. ФОРМИРОВАНИЕ ПРОМПТА ---
+    consumed_cal = user_data.get('consumed_calories', 0) or 0
     nutrition_prompt = f"""
-    Ты — Джарвис. Проанализируй фото еды.
+    Ты — ИИ помошник с характером Джарвиса, строгий, но любящий нутрициолог.
+    Хвали если питание сбалансированние и подшучивай если нет.
+    Проанализируй фото еды. Старайся ответить коротко.
     Цель пользователя: {user_data['target_calories']} ккал.
     Уже съедено: {consumed_cal} ккал.
 
     1. Оцени КБЖУ блюда.
     2. Выдай краткий анализ.
-    3. В САМОМ КОНЦЕ добавь строку: [ADD_DB: калории, белки, жиры, углеводы] (только числа).
+    3. Коротко порекомендуй варианты еды для закрытия КБЖУ.
+    4. В САМОМ КОНЦЕ добавь строку: [ADD_DB: калории, белки, жиры, углеводы] (только числа).
     """
 
-    # 4. Вызываем ИИ
+    # --- 4. ВЫЗОВ ИИ ---
     response_text = await process_llm(
-        update,
-        context,
-        query=nutrition_prompt,
-        image_data=photo_bytes,
-        mode="nutrition"
+        update, context, query=nutrition_prompt,
+        image_data=photo_bytes, mode="nutrition"
     )
 
-    # 5. ПАРСИНГ И ОБНОВЛЕНИЕ БАЗЫ
+    # --- 5. ПАРСИНГ И ОБНОВЛЕНИЕ БАЗЫ (Твой отчет вернулся!) ---
     if response_text:
-        # Ищем техническую строку
         match = re.search(r"\[ADD_DB:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)\]", response_text)
 
         if match:
-            # Конвертируем данные
             new_cal, new_prot, new_fat, new_carb = map(lambda x: int(float(x)), match.groups())
 
             # Записываем в базу
             update_daily_log(user_id, calories=new_cal, proteins=new_prot, fats=new_fat, carbs=new_carb)
 
-            # Считаем остатки (total = было в базе + то что добавили)
+            # Расчет остатков
             total_c = (user_data['consumed_calories'] or 0) + new_cal
             total_p = (user_data['consumed_proteins'] or 0) + new_prot
             total_f = (user_data['consumed_fats'] or 0) + new_fat
@@ -98,11 +119,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rem_f = (user_data['target_fats'] or 0) - total_f
             rem_carb = (user_data['target_carbs'] or 0) - total_carb
 
-            # Функция для красивого отображения перебора
             def fmt(val):
-                return f"{val}" if val >= 0 else f"⚠️ {val} (перебор!)"
+                return f"{val}" if val >= 0 else f"⚠️ {val} (Перебор, хорош жрать!)"
 
-            # 6. ВЫВОД ОТЧЕТА (ОБЯЗАТЕЛЬНО ВНУТРИ if match)
+            # --- 6. ВЫВОД ОТЧЕТА ---
             await message.reply_text(
                 f"✅ **Данные внесены!**\n\n"
                 f"📊 **Остаток на сегодня:**\n"
@@ -113,12 +133,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         else:
-            # Если ИИ ответил текстом, но забыл прислать [ADD_DB:...]
             await message.reply_text(response_text)
-            await message.reply_text("⚠️ ИИ не смог выдать точные цифры КБЖУ. Попробуй другое фото.")
+            await message.reply_text("⚠️ ИИ не смог выдать тех-строку [ADD_DB]. Данные в базу не внесены.")
     else:
         await message.reply_text("❌ Не удалось получить ответ от ИИ.")
-
 
 
 def calculate_targets(weight, height, age, gender, activity):
@@ -267,8 +285,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_private(update, context, voice_text=text)
 
 
-
-
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
     user_id = update.effective_user.id
     message = update.message
@@ -311,7 +327,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
             context.user_data.pop('nutrition_state', None)
 
             await message.reply_text(
-                f"✅ <b>Джарвис: Профиль настроен!</b>\n\n"
+                f"✅ <b>Профиль настроен!</b>\n\n"
                 f"Ваш BMR: <b>{int(res['bmr'])} ккал</b>\n"
                 f"Цель (Ккал): <b>{res['cal']}</b>\n"
                 f"Белки: <b>{res['prot']}г</b> | Жиры: <b>{res['fat']}г</b> | Угли: <b>{res['carb']}г</b>\n\n"
@@ -347,31 +363,20 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
         await message.reply_text(AUTH_QUESTION)
         return
 
-    # Определение режима
-    is_forwarded = bool(message.forward_origin)
-    is_factcheck_trigger = any(word in raw_text.lower() for word in CHECK_WORDS)
-    mode = "inspector" if (is_forwarded or is_factcheck_trigger) else "chat"
+    # --- 1. ТРИГГЕРЫ АКТИВАЦИИ РЕЖИМА ЕДЫ ---
+    # Список фраз-команд
+    start_food_triggers = NUTRITION_TRIGGERS
 
-    # 2. Сбор контекста ТОЛЬКО если есть Reply (ответ на другое сообщение)
-    context_text = ""
-    if message.reply_to_message:
-        # Берем текст или подпись из сообщения, на которое ответили
-        context_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    if any(trigger in raw_text.lower() for trigger in start_food_triggers):
+        context.user_data['waiting_for_food'] = True
+        context.user_data['food_mode_timestamp'] = time.time()
+        await message.reply_text("🥗 Режим нутрициолога включен! Теперь жду фото (у вас есть 5 минут).")
+        return
 
-    # Формируем финальный промпт: контекст + текущее сообщение
-    if context_text:
-        final_prompt = f"КОНТЕКСТ ПРЕДЫДУЩЕГО СООБЩЕНИЯ:\n{context_text}\n\nТЕКУЩИЙ ЗАПРОС:\n{raw_text}"
-    else:
-        # Если реплая нет, просто шлем текущий текст (даже если это подпись к видео)
-        final_prompt = raw_text
-
-    await process_llm(
-        update, context, final_prompt,
-        selected_model=user_selected_model.get(user_id),
-        selected_provider=user_selected_provider.get(user_id),
-        mode=mode
-    )
-
+    # --- 2. ЖЕСТКИЙ ФИЛЬТР ФОТО ---
+    photo = message.photo[-1] if message.photo else None
+    image_data = None
+    mode = "chat"  # По умолчанию режим чата
 
 async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
     message = update.message

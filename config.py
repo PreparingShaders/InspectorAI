@@ -30,11 +30,28 @@ DEFAULT_OPENROUTER_MODELS = [
 
 GEMINI_MODELS = [
     'gemini-2.5-flash-lite',
-    'gemini-2.5-flash-image',
     "gemini-2.5-flash",        # Твой основной выбор. Лучшее соотношение скорости и зрения.
-    "gemini-3.1-flash-image-preview", # Самая новая Vision-модель (из серии Nano Banana 2).
-    "gemini-2.0-flash",        # Очень стабильная, проверенная версия.
+    "gemini-3.1-flash-image-preview",  # Самая новая Vision-модель (из серии Nano Banana 2).
+    "gemini-2.0-flash",  # Очень стабильная, проверенная версия.
+    'gemini-2.5-flash-image',
     "gemini-2.0-flash-lite",   # Облегченная, если нужна мгновенная реакция.
+]
+
+NUTRITION_MODELS = [
+    # 2. СПЕЦИАЛИЗИРОВАННЫЕ VISION-МОДЕЛИ (Твоя потеряшка тут!)
+    'gemini-2.5-flash-image',  # Оптимизирована именно под работу с фото
+    'gemini-3.1-flash-image-preview',  # Новейшая экспериментальная модель
+
+    # 3. СТАБИЛЬНЫЙ БЭКАП (Быстрые и надежные)
+    'gemini-2.5-flash',  # Высокая квота и скорость
+    'gemini-2.0-flash',
+    'nvidia/nemotron-nano-12b-v2-vl:free'
+
+    # 1. ТОП-УРОВЕНЬ (Твои находки с "мышлением")
+    'qwen/qwen3-vl-235b-a22b-thinking',  # Самая умная, разберет состав до грамма
+    'qwen/qwen3-vl-30b-a3b-thinking',  # Чуть быстрее, но такая же "думающая"
+
+
 ]
 
 # ─── Промпты ─────────────────────────────────────────────
