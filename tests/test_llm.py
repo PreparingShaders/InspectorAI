@@ -1,28 +1,35 @@
 import pytest
+import sys
+import os
 from unittest.mock import AsyncMock, MagicMock
-from InspectorAI.llm_service import process_llm
 
+# 1. Настройка путей (чтобы видел config.py и llm_service.py)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# 2. Импорт БЕЗ приставки InspectorAI, так как мы добавили папку в sys.path
+from llm_service import process_llm, current_free_or_models
 
 @pytest.mark.asyncio
 async def test_llm_fallback(mocker):
     context = MagicMock()
-    # Все методы, которые вызываются через await, ДОЛЖНЫ быть AsyncMock
     context.bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
     context.bot.edit_message_text = AsyncMock()
 
     update = MagicMock()
-    # Добавь это, чтобы не было ошибок доступа к атрибутам
     update.effective_chat.id = 12345
-    mocker.patch('InspectorAI.llm_service.or_client.chat.completions.create',
+
+    # Подготовка очереди
+    current_free_or_models.clear()
+    current_free_or_models.append("gemini-2.0-flash")
+
+    # 3. МОКИ (убираем приставку InspectorAI. из путей)
+    mocker.patch('llm_service.or_client.chat.completions.create',
                  side_effect=Exception("API Error"))
 
-    # Мокаем успех Gemini
-    mock_gemini = mocker.patch('InspectorAI.llm_service.gemini_client.models.generate_content')
+    mock_gemini = mocker.patch('llm_service.gemini_client.models.generate_content')
     mock_gemini.return_value.text = "Ответ от Gemini"
 
-    # В файле tests/test_llm.py
-    # Передаем провайдера 'openrouter' и любую модель, чтобы запустить цикл
-    # Передаем любую модель из твоего списка и провайдера
+    # 4. ЗАПУСК
     await process_llm(
         update,
         context,
@@ -30,5 +37,6 @@ async def test_llm_fallback(mocker):
         selected_model="arcee-ai/trinity-large-preview:free",
         selected_provider="openrouter",
         mode="chat"
-    )    # Проверяем, что бот переключился на Gemini после ошибки
+    )
+
     assert mock_gemini.called
