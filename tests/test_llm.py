@@ -20,7 +20,15 @@ async def test_llm_fallback(mocker):
     mock_gemini = mocker.patch('InspectorAI.llm_service.gemini_client.models.generate_content')
     mock_gemini.return_value.text = "Ответ от Gemini"
 
-    await process_llm(update, context, "Привет", mode="chat")
-
-    # Проверяем, что бот переключился на Gemini после ошибки
+    # В файле tests/test_llm.py
+    # Передаем провайдера 'openrouter' и любую модель, чтобы запустить цикл
+    # Передаем любую модель из твоего списка и провайдера
+    await process_llm(
+        update,
+        context,
+        "Привет",
+        selected_model="arcee-ai/trinity-large-preview:free",
+        selected_provider="openrouter",
+        mode="chat"
+    )    # Проверяем, что бот переключился на Gemini после ошибки
     assert mock_gemini.called
