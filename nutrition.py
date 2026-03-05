@@ -1,7 +1,7 @@
 # nutrition.py
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, date
 
 # --- Настройки Базы Данных ---
 DB_NAME = "nutrition.db"
@@ -64,8 +64,6 @@ def calculate_nutrition_plan(profile_data: dict) -> dict:
     """
     Рассчитывает и возвращает дневную норму КБЖУ на основе цели пользователя.
     """
-    # Здесь будет реализована логика расчета в зависимости от 'goal'
-    # Пока что это заглушка
     weight = profile_data.get('weight', 70)
     height = profile_data.get('height', 175)
     age = profile_data.get('age', 30)
@@ -91,14 +89,9 @@ def calculate_nutrition_plan(profile_data: dict) -> dict:
         target_calories = int(tdee * 0.90)  # Небольшой дефицит 10%
 
     # Расчет макронутриентов
-    # Белок: 2 г/кг для похудения/рекомпозиции, 1.8 г/кг для набора массы
     protein_multiplier = 1.8 if goal == 'mass_gain' else 2.0
     target_proteins = int(weight * protein_multiplier)
-    
-    # Жиры: 0.8-1 г/кг
     target_fats = int(weight * 0.9)
-    
-    # Углеводы: все остальное
     calories_from_protein_fat = (target_proteins * 4) + (target_fats * 9)
     target_carbs = int((target_calories - calories_from_protein_fat) / 4)
 
@@ -113,24 +106,93 @@ def calculate_nutrition_plan(profile_data: dict) -> dict:
 
 def update_user_profile(user_id: int, profile_data: dict):
     """Создает или обновляет профиль пользователя в БД."""
-    # TODO: Реализовать сохранение данных в таблицу profiles
-    pass
+    query = """
+        INSERT OR REPLACE INTO profiles (
+            user_id, goal, age, gender, height, weight, activity_level, 
+            target_calories, target_proteins, target_fats, target_carbs, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    params = (
+        user_id,
+        profile_data['goal'],
+        profile_data['age'],
+        profile_data['gender'],
+        profile_data['height'],
+        profile_data['weight'],
+        profile_data['activity_level'],
+        profile_data['target_calories'],
+        profile_data['target_proteins'],
+        profile_data['target_fats'],
+        profile_data['target_carbs'],
+        datetime.now()
+    )
+    try:
+        with get_db_connection() as conn:
+            conn.execute(query, params)
+            conn.commit()
+        logging.info(f"Профиль для user_id {user_id} обновлен.")
+    except sqlite3.Error as e:
+        logging.error(f"Ошибка при обновлении профиля {user_id}: {e}")
 
 def get_user_profile(user_id: int) -> dict:
-    """Возвращает профиль пользователя из БД."""
-    # TODO: Реализовать получение данных из таблицы profiles
-    pass
+    """Возвращает профиль пользователя из БД в виде словаря."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.execute("SELECT * FROM profiles WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logging.error(f"Ошибка при получении профиля {user_id}: {e}")
+        return None
 
 def add_food_log(user_id: int, meal_data: dict):
     """Добавляет запись о приеме пищи в БД."""
-    # TODO: Реализовать добавление записи в таблицу food_logs
-    pass
+    query = """
+        INSERT INTO food_logs (user_id, calories, proteins, fats, carbs, description)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """
+    params = (
+        user_id,
+        meal_data['calories'],
+        meal_data['proteins'],
+        meal_data['fats'],
+        meal_data['carbs'],
+        meal_data.get('description', '')
+    )
+    try:
+        with get_db_connection() as conn:
+            conn.execute(query, params)
+            conn.commit()
+        logging.info(f"Лог еды для user_id {user_id} добавлен.")
+    except sqlite3.Error as e:
+        logging.error(f"Ошибка при добавлении лога еды для {user_id}: {e}")
 
 def get_daily_summary(user_id: int) -> dict:
     """Возвращает суммарное КБЖУ за сегодня."""
-    # TODO: Реализовать получение и суммирование записей из food_logs за текущий день
-    pass
-
+    today = date.today().strftime("%Y-%m-%d")
+    query = """
+        SELECT 
+            SUM(calories) as total_calories,
+            SUM(proteins) as total_proteins,
+            SUM(fats) as total_fats,
+            SUM(carbs) as total_carbs
+        FROM food_logs 
+        WHERE user_id = ? AND DATE(timestamp) = ?
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.execute(query, (user_id, today))
+            row = cursor.fetchone()
+            # Возвращаем словарь с нулями, если за сегодня еще ничего не было съедено
+            return {
+                'total_calories': row['total_calories'] or 0,
+                'total_proteins': row['total_proteins'] or 0,
+                'total_fats': row['total_fats'] or 0,
+                'total_carbs': row['total_carbs'] or 0
+            } if row else {'total_calories': 0, 'total_proteins': 0, 'total_fats': 0, 'total_carbs': 0}
+    except sqlite3.Error as e:
+        logging.error(f"Ошибка при получении дневной сводки для {user_id}: {e}")
+        return None
 
 # Этот блок выполнится, если запустить файл напрямую: python nutrition.py
 if __name__ == '__main__':

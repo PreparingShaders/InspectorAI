@@ -1,8 +1,9 @@
 #handlers
 import re
 import logging
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filters, CommandHandler, CallbackQueryHandler
 
 # Финансы
 from finance import (
@@ -16,11 +17,20 @@ from llm_service import (
     GEMINI_MODEL_BY_ID, OPENROUTER_MODEL_BY_ID, process_llm
 )
 
+# Нутрициолог
+from nutrition import (
+    calculate_nutrition_plan,
+    update_user_profile,
+    get_user_profile,
+    get_daily_summary,
+    add_food_log
+)
+
 # Инструменты и Конфиг
 from utils import handle_voice_transcription, get_model_short_name
 from config import (
     CORRECT_PASSWORD, AUTH_QUESTION, TRIGGERS, CHECK_WORDS,
-    GEMINI_MODELS, FINANCE_WORDS
+    GEMINI_MODELS, FINANCE_WORDS, NUTRITION_TRIGGERS
 )
 
 # Состояния пользователей
@@ -28,6 +38,157 @@ authorized_users = set()
 user_selected_model = {}  # {user_id: model_path}
 user_selected_provider = {}  # {user_id: "gemini" или "openrouter"}
 
+# Состояния для диалога
+(PROFILE_GENDER, PROFILE_AGE, PROFILE_HEIGHT, PROFILE_WEIGHT, 
+ PROFILE_ACTIVITY, PROFILE_GOAL) = range(6)
+
+# --- Хендлеры для Нутрициолога ---
+
+async def profile_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает диалог по настройке профиля."""
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.message.reply_text(AUTH_QUESTION)
+        return ConversationHandler.END
+
+    keyboard = [
+        [InlineKeyboardButton("Мужской", callback_data="male"), InlineKeyboardButton("Женский", callback_data="female")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Давай настроим твой профиль. Укажи свой пол:", reply_markup=reply_markup)
+    return PROFILE_GENDER
+
+async def profile_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает пол и запрашивает возраст."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data['profile_gender'] = query.data
+    await query.edit_message_text(text=f"Пол: {query.data}. Теперь введи свой возраст (полных лет):")
+    return PROFILE_AGE
+
+async def profile_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает возраст и запрашивает рост."""
+    age = int(update.message.text)
+    context.user_data['profile_age'] = age
+    await update.message.reply_text(f"Возраст: {age}. Теперь введи свой рост (в см):")
+    return PROFILE_HEIGHT
+
+async def profile_height(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает рост и запрашивает вес."""
+    height = float(update.message.text)
+    context.user_data['profile_height'] = height
+    await update.message.reply_text(f"Рост: {height} см. Теперь введи свой вес (в кг):")
+    return PROFILE_WEIGHT
+
+async def profile_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает вес и запрашивает уровень активности."""
+    weight = float(update.message.text)
+    context.user_data['profile_weight'] = weight
+    keyboard = [
+        [InlineKeyboardButton("Сидячий образ жизни", callback_data="1.2")],
+        [InlineKeyboardButton("Легкая активность (1-3 тренировки/нед)", callback_data="1.375")],
+        [InlineKeyboardButton("Средняя активность (3-5 тренировок/нед)", callback_data="1.55")],
+        [InlineKeyboardButton("Высокая активность (6-7 тренировок/нед)", callback_data="1.725")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(f"Вес: {weight} кг. Теперь выбери свой уровень активности:", reply_markup=reply_markup)
+    return PROFILE_ACTIVITY
+
+async def profile_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает активность и запрашивает цель."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data['profile_activity'] = float(query.data)
+    keyboard = [
+        [InlineKeyboardButton("Похудение", callback_data="weight_loss")],
+        [InlineKeyboardButton("Рекомпозиция", callback_data="recomposition")],
+        [InlineKeyboardButton("Набор массы", callback_data="mass_gain")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text="Отлично! И последнee, выбери свою главную цель:", reply_markup=reply_markup)
+    return PROFILE_GOAL
+
+async def profile_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает цель, рассчитывает план и завершает диалог."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data['profile_goal'] = query.data
+
+    # Собираем все данные
+    profile_data = {
+        'user_id': query.from_user.id,
+        'gender': context.user_data['profile_gender'],
+        'age': context.user_data['profile_age'],
+        'height': context.user_data['profile_height'],
+        'weight': context.user_data['profile_weight'],
+        'activity_level': context.user_data['profile_activity'],
+        'goal': context.user_data['profile_goal'],
+    }
+
+    # Рассчитываем план
+    nutrition_plan = calculate_nutrition_plan(profile_data)
+    profile_data.update(nutrition_plan)
+
+    # Сохраняем в БД
+    update_user_profile(query.from_user.id, profile_data)
+
+    await query.edit_message_text(
+        text=f"✅ Профиль настроен!\n\n"
+             f"Твоя цель: {profile_data['goal']}\n"
+             f"Твоя норма калорий: {profile_data['target_calories']} ккал\n"
+             f"Белки: {profile_data['target_proteins']} г\n"
+             f"Жиры: {profile_data['target_fats']} г\n"
+             f"Углеводы: {profile_data['target_carbs']} г"
+    )
+    # Очищаем временные данные
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def profile_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отменяет диалог настройки профиля."""
+    await update.message.reply_text("Настройка профиля отменена.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает дневной статус КБЖУ."""
+    user_id = update.effective_user.id
+    profile = get_user_profile(user_id)
+    if not profile:
+        await update.message.reply_text("Сначала нужно настроить профиль с помощью /profile")
+        return
+
+    summary = get_daily_summary(user_id)
+    
+    rem_c = profile['target_calories'] - summary['total_calories']
+    rem_p = profile['target_proteins'] - summary['total_proteins']
+    rem_f = profile['target_fats'] - summary['total_fats']
+    rem_carb = profile['target_carbs'] - summary['total_carbs']
+
+    def fmt(val):
+        return f"{val}" if val >= 0 else f"⚠️ {val} (Перебор!)"
+
+    await update.message.reply_text(
+        f"📊 *Статус на сегодня*\n\n"
+        f"🔥 *Калории:*\n`{summary['total_calories']}` из `{profile['target_calories']}`\nОсталось: `{fmt(rem_c)}`\n\n"
+        f"🥩 *Белки:*\n`{summary['total_proteins']}` из `{profile['target_proteins']}`\nОсталось: `{fmt(rem_p)}`\n\n"
+        f"🥑 *Жиры:*\n`{summary['total_fats']}` из `{profile['target_fats']}`\nОсталось: `{fmt(rem_f)}`\n\n"
+        f"🍞 *Углеводы:*\n`{summary['total_carbs']}` из `{profile['target_carbs']}`\nОсталось: `{fmt(rem_carb)}`",
+        parse_mode="MarkdownV2"
+    )
+
+profile_setup_handler = ConversationHandler(
+    entry_points=[CommandHandler('profile', profile_start)],
+    states={
+        PROFILE_GENDER: [CallbackQueryHandler(profile_gender, pattern='^(male|female)$')],
+        PROFILE_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_age)],
+        PROFILE_HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_height)],
+        PROFILE_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_weight)],
+        PROFILE_ACTIVITY: [CallbackQueryHandler(profile_activity, pattern=r'^1\.')],
+        PROFILE_GOAL: [CallbackQueryHandler(profile_goal, pattern='^(weight_loss|recomposition|mass_gain)$')],
+    },
+    fallbacks=[CommandHandler('cancel', profile_cancel)],
+)
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 async def send_participant_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -155,61 +316,82 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
     message = update.message
     if not message: return
 
-    # 1. Извлекаем текст из ТЕКУЩЕГО сообщения (текст, подпись к видео/фото или голос)
-    # Порядок важен: голос > текст > подпись
     raw_text = voice_text or message.text or message.caption or ""
+    photo = message.photo[-1] if message.photo else None
 
-    # Если это "пустое" сообщение из альбома (видео без подписи) — игнорируем
-    if not raw_text:
-        return
-
-    # --- ЗАЩИТА ОТ ДУБЛЕЙ (АЛЬБОМОВ) ---
-    current_time = time.time()
-    last_text = context.user_data.get('last_msg_text', "")
-    last_msg_id = context.user_data.get('last_msg_id', 0)
-    last_time = context.user_data.get('last_msg_time', 0)
-
-    if raw_text == last_text and message.message_id != last_msg_id and (current_time - last_time) < 1.5:
-        return
-
-    context.user_data['last_msg_text'] = raw_text
-    context.user_data['last_msg_id'] = message.message_id
-    context.user_data['last_msg_time'] = current_time
-    # ----------------------------------
-
-    # Блок авторизации (теперь user_id на месте)
+    # --- Авторизация ---
     if user_id not in authorized_users:
         if raw_text.strip().lower() == CORRECT_PASSWORD.lower():
             authorized_users.add(user_id)
             await message.reply_text("✅ Доступ разрешен!")
-            return
-        await message.reply_text(AUTH_QUESTION)
+        else:
+            await message.reply_text(AUTH_QUESTION)
         return
 
-    # Определение режима
+    # --- Обработка подтверждения КБЖУ ---
+    if context.user_data.get('confirm_meal') and raw_text.lower() in ['да', 'нет']:
+        if raw_text.lower() == 'да':
+            meal_data = context.user_data['confirm_meal']
+            add_food_log(user_id, meal_data)
+            await message.reply_text("✅ Прием пищи сохранен!")
+            await show_status(update, context)
+        else:
+            await message.reply_text("❌ Операция отменена.")
+        context.user_data.pop('confirm_meal', None)
+        return
+
+    # --- Режим Нутрициолога ---
+    is_nutrition_mode = photo and any(word in (raw_text or "").lower() for word in NUTRITION_TRIGGERS)
+    if is_nutrition_mode:
+        profile = get_user_profile(user_id)
+        if not profile:
+            await message.reply_text("Сначала нужно настроить профиль с помощью /profile")
+            return
+
+        photo_file = await photo.get_file()
+        image_data = await photo_file.download_as_bytearray()
+        
+        prompt = f"Цели пользователя: {profile['target_calories']} ккал, {profile['target_proteins']} г белка. {raw_text}"
+        
+        llm_response = await process_llm(update, context, prompt, mode="nutrition", image_data=image_data)
+        
+        # Парсим JSON из ответа
+        try:
+            json_part = re.search(r'```json\n(.*)\n```', llm_response, re.DOTALL).group(1)
+            meal_data = json.loads(json_part)
+            
+            context.user_data['confirm_meal'] = meal_data
+            
+            await message.reply_text(
+                f"🤖 Я распознал следующее:\n"
+                f"Калории: {meal_data['calories']}\n"
+                f"Белки: {meal_data['proteins']}\n"
+                f"Жиры: {meal_data['fats']}\n"
+                f"Углеводы: {meal_data['carbs']}\n\n"
+                f"Сохранить эти данные? (да/нет)"
+            )
+        except (AttributeError, json.JSONDecodeError):
+            await message.reply_text("Не удалось распознать КБЖУ в ответе. Попробуйте еще раз.")
+        return
+
+    # --- Остальные режимы ---
     is_forwarded = bool(message.forward_origin)
     is_factcheck_trigger = any(word in raw_text.lower() for word in CHECK_WORDS)
     mode = "inspector" if (is_forwarded or is_factcheck_trigger) else "chat"
 
-    # 2. Сбор контекста ТОЛЬКО если есть Reply (ответ на другое сообщение)
     context_text = ""
     if message.reply_to_message:
-        # Берем текст или подпись из сообщения, на которое ответили
         context_text = message.reply_to_message.text or message.reply_to_message.caption or ""
 
-    # Формируем финальный промпт: контекст + текущее сообщение
-    if context_text:
-        final_prompt = f"КОНТЕКСТ ПРЕДЫДУЩЕГО СООБЩЕНИЯ:\n{context_text}\n\nТЕКУЩИЙ ЗАПРОС:\n{raw_text}"
-    else:
-        # Если реплая нет, просто шлем текущий текст (даже если это подпись к видео)
-        final_prompt = raw_text
+    final_prompt = f"КОНТЕКСТ ПРЕДЫДУЩЕГО СООБЩЕНИЯ:\n{context_text}\n\nТЕКУЩИЙ ЗАПРОС:\n{raw_text}" if context_text else raw_text
 
-    await process_llm(
-        update, context, final_prompt,
-        selected_model=user_selected_model.get(user_id),
-        selected_provider=user_selected_provider.get(user_id),
-        mode=mode
-    )
+    if final_prompt:
+        await process_llm(
+            update, context, final_prompt,
+            selected_model=user_selected_model.get(user_id),
+            selected_provider=user_selected_provider.get(user_id),
+            mode=mode
+        )
 
 
 async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):

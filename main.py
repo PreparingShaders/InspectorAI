@@ -15,10 +15,12 @@ warnings.filterwarnings("ignore", category=UserWarning, module='telegram.ext')
 from config import BOT_TOKEN
 from handlers import (
     start, show_model_selection, handle_private,
-    handle_group, callback_handler, handle_voice
+    handle_group, callback_handler, handle_voice,
+    profile_setup_handler, show_status # Импортируем новый хендлер
 )
 from llm_service import update_model_mappings
 from utils import handle_voice_transcription, link_fixer_logic
+from nutrition import init_db as init_nutrition_db # Импортируем функцию инициализации БД
 
 # Выключаем логи от библиотек (httpx, apscheduler и т.д.)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -52,6 +54,9 @@ def main():
     if not BOT_TOKEN:
         logging.error("❌ BOT_TOKEN не найден!")
         return
+    
+    # Инициализируем базу данных для нутрициолога
+    init_nutrition_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -63,8 +68,12 @@ def main():
 
     # 2. РЕГИСТРАЦИЯ ХЕНДЛЕРОВ (Порядок важен!)
 
+    # Добавляем диалог для профиля
+    app.add_handler(profile_setup_handler)
+
     # Команды
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", show_status))
     app.add_handler(CommandHandler("model", show_model_selection))
     app.add_handler(CallbackQueryHandler(callback_handler))
 
