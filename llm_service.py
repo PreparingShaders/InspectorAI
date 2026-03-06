@@ -31,8 +31,9 @@ gemini_client = genai.Client(
 
 # --- Глобальные состояния моделей ---
 current_free_or_models = DEFAULT_OPENROUTER_MODELS.copy()
-GEMINI_MODEL_BY_ID = {str(i): m for i, m in enumerate(GEMINI_MODELS)}
+GEMINI_MODEL_BY_ID = {}
 OPENROUTER_MODEL_BY_ID = {}
+NUTRITION_MODEL_BY_ID = {}
 chat_histories = defaultdict(list)
 BLACKLISTED_MODELS = set()
 
@@ -56,13 +57,24 @@ def fetch_dynamic_models():
     return DEFAULT_OPENROUTER_MODELS
 
 def update_model_mappings():
-    global current_free_or_models, OPENROUTER_MODEL_BY_ID
+    global current_free_or_models, OPENROUTER_MODEL_BY_ID, NUTRITION_MODEL_BY_ID, GEMINI_MODEL_BY_ID
     new_models = fetch_dynamic_models()
     if new_models:
         current_free_or_models = new_models
         OPENROUTER_MODEL_BY_ID.clear()
         for i, m in enumerate(current_free_or_models):
             OPENROUTER_MODEL_BY_ID[str(i + 100)] = m
+    
+    GEMINI_MODEL_BY_ID.clear()
+    for i, m in enumerate(GEMINI_MODELS):
+        GEMINI_MODEL_BY_ID[str(i)] = m
+
+    NUTRITION_MODEL_BY_ID.clear()
+    for i, m in enumerate(NUTRITION_MODELS):
+        NUTRITION_MODEL_BY_ID[str(i + 200)] = m
+
+# Вызываем один раз при старте
+update_model_mappings()
 
 async def process_llm(update, context, query, selected_model=None, selected_provider=None, thread_id=None, mode="chat", image_data=None):
     chat_id = update.effective_chat.id
@@ -98,8 +110,9 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
 
     # --- UPDATED: Логика выбора моделей ---
     models_to_try = []
-    if selected_model and selected_provider:
-        models_to_try.append((selected_provider, selected_model))
+    if selected_model:
+        prov = "openrouter" if "/" in selected_model else "gemini"
+        models_to_try.append((prov, selected_model))
 
     if mode == "nutrition":
         # Для нутрициолога приоритет у спец. моделей

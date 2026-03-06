@@ -15,7 +15,7 @@ from finance import (
 )
 from llm_service import (
     update_model_mappings, current_free_or_models,
-    GEMINI_MODEL_BY_ID, OPENROUTER_MODEL_BY_ID, process_llm
+    GEMINI_MODEL_BY_ID, OPENROUTER_MODEL_BY_ID, process_llm, NUTRITION_MODEL_BY_ID
 )
 from nutrition import (
     calculate_nutrition_plan,
@@ -31,12 +31,13 @@ from nutrition import (
 from utils import handle_voice_transcription, get_model_short_name
 from config import (
     CORRECT_PASSWORD, AUTH_QUESTION, TRIGGERS, CHECK_WORDS,
-    GEMINI_MODELS, FINANCE_WORDS, NUTRITION_TRIGGERS
+    GEMINI_MODELS, FINANCE_WORDS, NUTRITION_TRIGGERS, NUTRITION_MODELS
 )
 
 # ... (состояния)
 authorized_users = set()
 user_selected_model = {}
+user_selected_nutrition_model = {}
 user_selected_provider = {}
 (PROFILE_GENDER, PROFILE_AGE, PROFILE_HEIGHT, PROFILE_WEIGHT, 
  PROFILE_ACTIVITY, PROFILE_GOAL) = range(6)
@@ -47,7 +48,8 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("📊 Статус"), KeyboardButton("📈 Статистика")],
         [KeyboardButton("❓ Что съесть?"), KeyboardButton("🍩 Читмил")],
-        [KeyboardButton("⚙️ Профиль"), KeyboardButton("🤖 Сменить модель")]
+        [KeyboardButton("⚙️ Профиль"), KeyboardButton("🤖 Сменить модель")],
+        [KeyboardButton("❌ Отмена")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -79,15 +81,15 @@ async def show_nutrition_stats(update: Update, context: ContextTypes.DEFAULT_TYP
     # ... (код без изменений)
     user_id = update.effective_user.id
     if user_id not in authorized_users:
-        await update.message.reply_text(AUTH_QUESTION)
+        await update.effective_message.reply_text(AUTH_QUESTION)
         return
     profile = get_user_profile(user_id)
     if not profile:
-        await update.message.reply_text("Сначала нужно настроить профиль: /profile")
+        await update.effective_message.reply_text("Сначала нужно настроить профиль: /profile")
         return
     historical_data = get_historical_summary(user_id, days=7)
     if not historical_data:
-        await update.message.reply_text("Пока нет данных для статистики. Начни записывать приемы пищи.")
+        await update.effective_message.reply_text("Пока нет данных для статистики. Начни записывать приемы пищи.")
         return
     message = ["*📈 Статистика за последнюю неделю:*\n"]
     total_calories, total_proteins, total_fats, total_carbs, day_count = 0, 0, 0, 0, 0
@@ -114,17 +116,17 @@ async def show_nutrition_stats(update: Update, context: ContextTypes.DEFAULT_TYP
         message.append(f"🥩 `{int(avg_p)} / {profile['target_proteins']}`")
         message.append(f"🥑 `{int(avg_f)} / {profile['target_fats']}`")
         message.append(f"🍞 `{int(avg_carb)} / {profile['target_carbs']}`")
-    await update.message.reply_text("\n".join(message), parse_mode="MarkdownV2")
+    await update.effective_message.reply_text("\n".join(message), parse_mode="MarkdownV2")
 
 async def get_recipe_suggestion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ... (код без изменений)
     user_id = update.effective_user.id
     if user_id not in authorized_users:
-        await update.message.reply_text(AUTH_QUESTION)
+        await update.effective_message.reply_text(AUTH_QUESTION)
         return
     remaining = get_remaining_macros(user_id)
     if not remaining:
-        await update.message.reply_text("Сначала настрой профиль: /profile")
+        await update.effective_message.reply_text("Сначала настрой профиль: /profile")
         return
     priority = max(remaining, key=lambda k: remaining[k] if 'calories' not in k else -1)
     prompt = (
@@ -141,9 +143,9 @@ async def cheat_meal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # ... (код без изменений)
     user_id = update.effective_user.id
     if user_id not in authorized_users:
-        await update.message.reply_text(AUTH_QUESTION)
+        await update.effective_message.reply_text(AUTH_QUESTION)
         return ConversationHandler.END
-    await update.message.reply_text("Пришли фото или подробное описание того, что ты съел, и я оценю масштаб трагедии.")
+    await update.effective_message.reply_text("Пришли фото или подробное описание того, что ты съел, и я оценю масштаб трагедии.")
     return CHEAT_MEAL_INPUT
 
 async def cheat_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -160,7 +162,10 @@ async def cheat_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         photo_file = await photo.get_file()
         image_data = await photo_file.download_as_bytearray()
     prompt = f"Оцени КБЖУ для этого блюда. Описание: '{text_input}'. Ответь только JSON-объектом вида: {{'calories': X, 'proteins': Y, 'fats': Z, 'carbs': W}}"
-    llm_response = await process_llm(update, context, prompt, mode="nutrition", image_data=image_data)
+    llm_response = await process_llm(
+        update, context, prompt, mode="nutrition", image_data=image_data,
+        selected_model=user_selected_nutrition_model.get(user_id)
+    )
     
     meal_data = parse_llm_json(llm_response) # Используем новый парсер
 
@@ -201,10 +206,12 @@ async def cheat_meal_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.pop('cheat_meal_data', None)
     return ConversationHandler.END
 
-async def cheat_meal_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений)
-    await update.message.reply_text("Диалог 'Читмил' отменен.")
-    context.user_data.pop('cheat_meal_data', None)
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels and ends the conversation."""
+    await update.effective_message.reply_text(
+        'Действие отменено.', reply_markup=get_main_keyboard()
+    )
+    context.user_data.clear()
     return ConversationHandler.END
 
 cheat_meal_handler = ConversationHandler(
@@ -213,23 +220,26 @@ cheat_meal_handler = ConversationHandler(
         MessageHandler(filters.Regex('^🍩 Читмил$'), cheat_meal_start)
     ],
     states={
-        CHEAT_MEAL_INPUT: [MessageHandler(filters.TEXT | filters.PHOTO | filters.CAPTION, cheat_meal_input)],
+        CHEAT_MEAL_INPUT: [MessageHandler((filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ Отмена$')) | filters.PHOTO | filters.CAPTION, cheat_meal_input)],
         CHEAT_MEAL_CONFIRM: [CallbackQueryHandler(cheat_meal_confirm, pattern='^(confirm_cheat|cancel_cheat)$')]
     },
-    fallbacks=[CommandHandler('cancel', cheat_meal_cancel)],
+    fallbacks=[
+        CommandHandler('cancel', cancel_conversation),
+        MessageHandler(filters.Regex('^❌ Отмена$'), cancel_conversation)
+    ],
 )
 
 async def profile_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (код без изменений)
     user_id = update.effective_user.id
     if user_id not in authorized_users:
-        await update.message.reply_text(AUTH_QUESTION)
+        await update.effective_message.reply_text(AUTH_QUESTION)
         return ConversationHandler.END
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.message.reply_text("Укажи свой пол:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Мужской", callback_data="male"), InlineKeyboardButton("Женский", callback_data="female")]]))
     else:
-        await update.message.reply_text("Укажи свой пол:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Мужской", callback_data="male"), InlineKeyboardButton("Женский", callback_data="female")]]))
+        await update.effective_message.reply_text("Укажи свой пол:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Мужской", callback_data="male"), InlineKeyboardButton("Женский", callback_data="female")]]))
     return PROFILE_GENDER
 
 async def profile_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -241,28 +251,46 @@ async def profile_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return PROFILE_AGE
 
 async def profile_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений)
-    context.user_data['profile_age'] = int(update.message.text)
-    await update.message.reply_text("Введи рост (см):")
-    return PROFILE_HEIGHT
+    try:
+        age = int(update.message.text)
+        if not 10 < age < 100:
+            raise ValueError("Некорректный возраст")
+        context.user_data['profile_age'] = age
+        await update.message.reply_text("Введи рост (см):")
+        return PROFILE_HEIGHT
+    except (ValueError, TypeError):
+        await update.message.reply_text("Это не похоже на возраст. Пожалуйста, введи возраст числом. Для отмены введи /cancel или нажми кнопку '❌ Отмена'.")
+        return PROFILE_AGE
 
 async def profile_height(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений)
-    context.user_data['profile_height'] = float(update.message.text)
-    await update.message.reply_text("Введи вес (кг):")
-    return PROFILE_WEIGHT
+    try:
+        height = float(update.message.text.replace(',', '.'))
+        if not 100 < height < 250:
+            raise ValueError("Некорректный рост")
+        context.user_data['profile_height'] = height
+        await update.message.reply_text("Введи вес (кг):")
+        return PROFILE_WEIGHT
+    except (ValueError, TypeError):
+        await update.message.reply_text("Это не похоже на рост. Пожалуйста, введи рост числом (в см). Для отмены введи /cancel или нажми кнопку '❌ Отмена'.")
+        return PROFILE_HEIGHT
 
 async def profile_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений)
-    context.user_data['profile_weight'] = float(update.message.text)
-    keyboard = [
-        [InlineKeyboardButton("Сидячий", callback_data="1.2")],
-        [InlineKeyboardButton("Легкая активность", callback_data="1.375")],
-        [InlineKeyboardButton("Средняя активность", callback_data="1.55")],
-        [InlineKeyboardButton("Высокая активность", callback_data="1.725")],
-    ]
-    await update.message.reply_text("Уровень активности:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return PROFILE_ACTIVITY
+    try:
+        weight = float(update.message.text.replace(',', '.'))
+        if not 30 < weight < 200:
+            raise ValueError("Некорректный вес")
+        context.user_data['profile_weight'] = weight
+        keyboard = [
+            [InlineKeyboardButton("Сидячий", callback_data="1.2")],
+            [InlineKeyboardButton("Легкая активность", callback_data="1.375")],
+            [InlineKeyboardButton("Средняя активность", callback_data="1.55")],
+            [InlineKeyboardButton("Высокая активность", callback_data="1.725")],
+        ]
+        await update.message.reply_text("Уровень активности:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return PROFILE_ACTIVITY
+    except (ValueError, TypeError):
+        await update.message.reply_text("Это не похоже на вес. Пожалуйста, введи вес числом (в кг). Для отмены введи /cancel или нажми кнопку '❌ Отмена'.")
+        return PROFILE_WEIGHT
 
 async def profile_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (код без изменений)
@@ -300,18 +328,11 @@ async def profile_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data.clear()
     return ConversationHandler.END
 
-async def profile_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений)
-    await update.message.reply_text("Настройка профиля отменена.")
-    context.user_data.clear()
-    return ConversationHandler.END
-
 async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (код без изменений)
     user_id = update.effective_user.id
     target = get_adjusted_target(user_id)
     if not target:
-        await update.message.reply_text("Сначала нужно настроить профиль с помощью /profile")
+        await update.effective_message.reply_text("Сначала нужно настроить профиль с помощью /profile")
         return
     summary = get_daily_summary(user_id)
     rem_c = target['target_calories'] - summary['total_calories']
@@ -319,7 +340,7 @@ async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rem_f = target['target_fats'] - summary['total_fats']
     rem_carb = target['target_carbs'] - summary['total_carbs']
     def fmt(val): return f"{val}" if val >= 0 else f"⚠️ {val}"
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f"📊 *Статус на сегодня*\n\n"
         f"🔥 *Калории:*\n`{summary['total_calories']}` из `{target['target_calories']}`\nОсталось: `{fmt(rem_c)}`\n\n"
         f"🥩 *Белки:*\n`{summary['total_proteins']}` из `{target['target_proteins']}`\nОсталось: `{fmt(rem_p)}`\n\n"
@@ -335,53 +356,57 @@ profile_setup_handler = ConversationHandler(
     ],
     states={
         PROFILE_GENDER: [CallbackQueryHandler(profile_gender, pattern='^(male|female)$')],
-        PROFILE_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_age)],
-        PROFILE_HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_height)],
-        PROFILE_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_weight)],
+        PROFILE_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ Отмена$'), profile_age)],
+        PROFILE_HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ Отмена$'), profile_height)],
+        PROFILE_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ Отмена$'), profile_weight)],
         PROFILE_ACTIVITY: [CallbackQueryHandler(profile_activity, pattern=r'^1\.')],
         PROFILE_GOAL: [CallbackQueryHandler(profile_goal, pattern='^(weight_loss|recomposition|mass_gain)$')],
     },
-    fallbacks=[CommandHandler('cancel', profile_cancel)],
+    fallbacks=[
+        CommandHandler('cancel', cancel_conversation),
+        MessageHandler(filters.Regex('^❌ Отмена$'), cancel_conversation)
+    ],
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ... (код без изменений)
     user_id = update.effective_user.id
     if user_id in authorized_users:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "Клавиатура на месте! Чем займемся?",
             reply_markup=get_main_keyboard()
         )
     else:
-        await update.message.reply_text(AUTH_QUESTION)
+        await update.effective_message.reply_text(AUTH_QUESTION)
 
 async def show_model_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (код без изменений)
     update_model_mappings()
     user_id = update.effective_user.id
     keyboard = []
-    keyboard.append([InlineKeyboardButton("🎁 OpenRouter (Free):", callback_data="dummy")])
-    or_buttons = []
-    for i, model in enumerate(current_free_or_models):
-        name = get_model_short_name(model, "openrouter")
-        prefix = "✅ " if user_selected_model.get(user_id) == model else ""
-        or_buttons.append(InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:o:{i + 100}"))
-        if len(or_buttons) == 2:
-            keyboard.append(or_buttons)
-            or_buttons = []
-    if or_buttons: keyboard.append(or_buttons)
+
+    def create_buttons(models, model_map, prefix, start_idx, selected_model_dict):
+        buttons = []
+        for i, model in enumerate(models):
+            name = get_model_short_name(model, "gemini" if "gemini" in model else "openrouter")
+            current_selection = selected_model_dict.get(user_id)
+            is_selected = current_selection == model
+            button_prefix = "✅ " if is_selected else ""
+            callback_data = f"sel:{prefix}:{i + start_idx}"
+            buttons.append(InlineKeyboardButton(f"{button_prefix}{name}", callback_data=callback_data))
+        return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+
+    keyboard.append([InlineKeyboardButton("💬 Модели для общения:", callback_data="dummy")])
+    keyboard.extend(create_buttons(current_free_or_models, OPENROUTER_MODEL_BY_ID, "o", 100, user_selected_model))
+    keyboard.extend(create_buttons(GEMINI_MODELS, GEMINI_MODEL_BY_ID, "g", 0, user_selected_model))
+    
     keyboard.append([InlineKeyboardButton("──────────────", callback_data="dummy")])
-    keyboard.append([InlineKeyboardButton("✨ Gemini (Резерв):", callback_data="dummy")])
-    gem_buttons = []
-    for i, model in enumerate(GEMINI_MODELS):
-        name = get_model_short_name(model, "gemini")
-        prefix = "✅ " if user_selected_model.get(user_id) == model else ""
-        gem_buttons.append(InlineKeyboardButton(f"{prefix}{name}", callback_data=f"sel:g:{i}"))
-        if len(gem_buttons) == 2:
-            keyboard.append(gem_buttons)
-            gem_buttons = []
-    if gem_buttons: keyboard.append(gem_buttons)
-    keyboard.append([InlineKeyboardButton("🤖 Автовыбор", callback_data="sel:auto")])
+    
+    keyboard.append([InlineKeyboardButton("🥗 Модели для анализа еды:", callback_data="dummy")])
+    keyboard.extend(create_buttons(NUTRITION_MODELS, NUTRITION_MODEL_BY_ID, "n", 200, user_selected_nutrition_model))
+
+    keyboard.append([InlineKeyboardButton("🤖 Автовыбор для чата", callback_data="sel:auto_chat")])
+    keyboard.append([InlineKeyboardButton("🥗 Автовыбор для еды", callback_data="sel:auto_nutrition")])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "<b>Выбор модели ИИ</b>"
     if update.callback_query:
@@ -418,16 +443,6 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
         else:
             await message.reply_text(AUTH_QUESTION)
         return
-    if context.user_data.get('confirm_meal') and raw_text.lower() in ['да', 'нет']:
-        if raw_text.lower() == 'да':
-            meal_data = context.user_data['confirm_meal']
-            add_food_log(user_id, meal_data)
-            await message.reply_text("✅ Прием пищи сохранен!")
-            await show_status(update, context)
-        else:
-            await message.reply_text("❌ Операция отменена.")
-        context.user_data.pop('confirm_meal', None)
-        return
     
     # --- Mode Determination ---
     final_prompt = raw_text
@@ -449,17 +464,30 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
         photo_file = await photo.get_file()
         image_data = await photo_file.download_as_bytearray()
         prompt = f"Цели пользователя: {profile['target_calories']} ккал, {profile['target_proteins']} г белка. {raw_text}"
-        llm_response = await process_llm(update, context, prompt, mode="nutrition", image_data=image_data)
+        llm_response = await process_llm(
+            update, context, prompt, mode="nutrition", image_data=image_data,
+            selected_model=user_selected_nutrition_model.get(user_id)
+        )
         
         meal_data = parse_llm_json(llm_response) # Используем новый парсер
 
         if meal_data:
             context.user_data['confirm_meal'] = meal_data
-            await message.reply_text(
-                f"🤖 Я распознал:\n"
-                f"КБЖУ: {meal_data['calories']}/{meal_data['proteins']}/{meal_data['fats']}/{meal_data['carbs']}\n"
-                f"Сохранить? (да/нет)"
+            text = (
+                f"<b>🤖 Распознано:</b>\n\n"
+                f"🔥 Калории: <code>{meal_data.get('calories', 0)}</code>\n"
+                f"🥩 Белки: <code>{meal_data.get('proteins', 0)} г</code>\n"
+                f"🥑 Жиры: <code>{meal_data.get('fats', 0)} г</code>\n"
+                f"🍞 Углеводы: <code>{meal_data.get('carbs', 0)} г</code>\n\n"
+                f"Сохранить этот прием пищи?"
             )
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Сохранить", callback_data="confirm_meal_save"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="confirm_meal_cancel")
+                ]
+            ]
+            await message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
             await message.reply_text("Не удалось распознать КБЖУ в ответе. Попробуйте еще раз.")
         return
@@ -554,11 +582,69 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
     )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (код без изменений)
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
-    if data.startswith("f_toggle:"):
+    
+    await query.answer()
+
+    if data == "confirm_meal_save":
+        meal_data = context.user_data.pop('confirm_meal', None)
+        if meal_data:
+            add_food_log(user_id, meal_data)
+            await query.edit_message_text("✅ Прием пищи сохранен!")
+            await show_status(update, context)
+        else:
+            await query.edit_message_text("❌ Не удалось найти данные о еде. Попробуйте снова.")
+        return
+
+    if data == "confirm_meal_cancel":
+        context.user_data.pop('confirm_meal', None)
+        await query.edit_message_text("❌ Операция отменена.")
+        return
+
+    if data.startswith("sel:"):
+        parts = data.split(":")
+        action = parts[1]
+
+        if action == "auto_chat":
+            user_selected_model.pop(user_id, None)
+            user_selected_provider.pop(user_id, None)
+            await query.edit_message_text("🤖 Автовыбор для чата включен.")
+            return
+        if action == "auto_nutrition":
+            user_selected_nutrition_model.pop(user_id, None)
+            await query.edit_message_text("🥗 Автовыбор для анализа еды включен.")
+            return
+
+        prov_code, idx = parts[1], parts[2]
+        
+        model_path, provider, model_dict, name_prefix = None, None, None, ""
+
+        if prov_code == 'g':
+            model_path = GEMINI_MODEL_BY_ID.get(idx)
+            provider = "gemini"
+            model_dict = user_selected_model
+            name_prefix = "💬"
+        elif prov_code == 'o':
+            model_path = OPENROUTER_MODEL_BY_ID.get(idx)
+            provider = "openrouter"
+            model_dict = user_selected_model
+            name_prefix = "💬"
+        elif prov_code == 'n':
+            model_path = NUTRITION_MODEL_BY_ID.get(idx)
+            provider = "gemini" if "gemini" in model_path else "openrouter"
+            model_dict = user_selected_nutrition_model
+            name_prefix = "🥗"
+
+        if model_path and model_dict is not None:
+            model_dict[user_id] = model_path
+            if prov_code in ['g', 'o']:
+                 user_selected_provider[user_id] = provider
+            name = get_model_short_name(model_path, provider)
+            await query.edit_message_text(f"{name_prefix} Выбрана модель: <b>{name}</b>", parse_mode="HTML")
+        
+    elif data.startswith("f_toggle:"):
         uid = data.split(":")[1]
         participants = context.user_data.get('tmp_participants', [])
         if uid in participants:
@@ -567,9 +653,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             participants.append(uid)
         context.user_data['tmp_participants'] = participants
         await send_participant_selector(update, context)
-        await query.answer()
-        return
-    if data.startswith("pay_select:"):
+    elif data.startswith("pay_select:"):
         creditor_id = data.split(":")[1]
         from finance import load_db
         db = load_db()
@@ -579,8 +663,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'tmp_creditor_id': creditor_id
         })
         await query.edit_message_text(f"💰 Сколько возвращаем для <b>{creditor_name}</b>?", parse_mode="HTML")
-        return
-    if data == "f_confirm":
+    elif data == "f_confirm":
         participants = context.user_data.get('tmp_participants')
         if not participants:
             await query.answer("Выбери хотя бы одного!", show_alert=True)
@@ -588,25 +671,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         share = apply_expense(user_id, participants, context.user_data.get('tmp_amount'))
         await query.edit_message_text(f"✅ Записано!\nКаждый (включая тебя) должен по {share} р.")
         context.user_data.clear()
-        return
-    if data == "f_cancel":
+    elif data == "f_cancel":
         context.user_data.clear()
         await query.edit_message_text("❌ Расчет отменен.")
-        return
-    await query.answer()
-    if data == "open_menu":
+    elif data == "open_menu":
         await show_model_selection(update, context)
-    elif data == "sel:auto":
-        user_selected_model[user_id] = user_selected_provider[user_id] = None
-        await query.edit_message_text("🤖 Автовыбор включен.")
-    elif data.startswith("sel:"):
-        _, prov_code, idx = data.split(":")
-        provider = "gemini" if prov_code == "g" else "openrouter"
-        model_path = GEMINI_MODEL_BY_ID.get(idx) if prov_code == "g" else OPENROUTER_MODEL_BY_ID.get(idx)
-        if model_path:
-            user_selected_model[user_id], user_selected_provider[user_id] = model_path, provider
-            name = get_model_short_name(model_path, provider)
-            await query.edit_message_text(f"🎯 Выбрана модель: <b>{name}</b>", parse_mode="HTML")
 
 async def send_participant_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ... (код без изменений)
