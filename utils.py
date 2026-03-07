@@ -1,31 +1,47 @@
 import os
 import re
 import asyncio
+import html
 from faster_whisper import WhisperModel
 from telegram import LinkPreviewOptions
-from telegram.helpers import escape_markdown  # Добавляем для линк-фиксера
-import telegramify_markdown, telegram
+import telegram
 
 # Инициализируем модель Whisper
 model_whisper = WhisperModel("base", device="cpu", compute_type="int8")
 
-
-def safe_format_to_html(text: str) -> str:
-    """Конвертирует Markdown в MarkdownV2 для Telegram."""
+def to_html(text: str) -> str:
+    """
+    Преобразует Markdown от LLM в безопасный HTML для Telegram.
+    """
     if not text:
         return ""
-    try:
-        # 1. Сначала базовое форматирование
-        converted = telegramify_markdown.markdownify(text)
 
-        # 2. Магия: экранируем точки, которые библиотека могла пропустить
-        # (только если они не заэкранированы и не в ссылках/блоках кода)
-        # Но проще всего довериться библиотеке и добавить финальный catch-all
-        return converted
-    except Exception as e:
-        print(f"⚠️ Ошибка форматирования: {e}")
-        return escape_markdown(text, version=2)
+    # 1. Экранируем основные HTML-символы
+    escaped_text = html.escape(text)
 
+    # 2. Заменяем Markdown на HTML-теги
+    # Жирный текст: **text** -> <b>text</b>
+    escaped_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', escaped_text)
+    # Курсив: *text* -> <i>text</i>
+    escaped_text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', escaped_text)
+    # Зачеркнутый: ~~text~~ -> <s>text</s>
+    escaped_text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', escaped_text)
+    # Моноширинный (inline): `text` -> <code>text</code>
+    escaped_text = re.sub(r'`(.*?)`', r'<code>\1</code>', escaped_text)
+    
+    # 3. Списки: преобразуем маркеры в •
+    escaped_text = re.sub(r'^\s*[\*\-]\s+', '• ', escaped_text, flags=re.MULTILINE)
+
+    # 4. Блоки кода: ```lang\ncode``` -> <pre><code class="language-lang">code</code></pre>
+    def code_block_replacer(match):
+        lang = match.group(1) or ""
+        code = match.group(2)
+        # lang может быть пустым, это нормально
+        return f'<pre><code class="language-{lang}">{code}</code></pre>'
+    
+    escaped_text = re.sub(r'```(\w*)\n(.*?)\n```', code_block_replacer, escaped_text, flags=re.DOTALL)
+
+    return escaped_text
 
 def get_model_short_name(model_path: str, provider: str) -> str:
     if not model_path: return "Auto"
@@ -53,7 +69,6 @@ async def link_fixer_logic(update, context):
     message = update.message or update.edited_message
     if not message or not message.from_user: return
 
-    # 1. Проверка авторизации (чтобы не было дыры)
     from handlers import authorized_users
     if message.from_user.id not in authorized_users:
         return
@@ -62,7 +77,7 @@ async def link_fixer_logic(update, context):
     if not text: return
 
     replacements = {
-        r"instagram\.com/": "kkinstagram.com/",
+        r"instagram\.com/": "ddinstagram.com/",
         r"(vm|vt|www)\.tiktok\.com/": "vxtiktok.com/",
         r"(twitter|x)\.com/": "fxtwitter.com/",
     }
@@ -76,32 +91,18 @@ async def link_fixer_logic(update, context):
 
     if not found: return
 
-    user_name = escape_markdown(message.from_user.first_name, version=2)
-    # Экранируем исправленный текст, чтобы спецсимволы в ссылках не ломали MarkdownV2
-    safe_text = escape_markdown(new_text, version=2)
-    final_text = f"✅ *От {user_name}:*\n{safe_text}"
+    user_name = html.escape(message.from_user.first_name)
+    safe_text = html.escape(new_text)
+    final_text = f"✅ <b>От {user_name}:</b>\n{safe_text}"
 
-    # 2. ОДИН блок try для всех сетевых операций
     try:
-        # Пытаемся удалить оригинал
-        await message.delete(read_timeout=10)
-
-        # Отправляем исправленную версию
+        await message.delete()
         await context.bot.send_message(
             chat_id=message.chat_id,
             text=final_text,
-            parse_mode="MarkdownV2",
+            parse_mode="HTML",
             message_thread_id=message.message_thread_id,
-            link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True),
-            read_timeout=20,
-            write_timeout=20
+            link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
         )
-    except telegram.error.TimedOut:
-        print("⏰ Ошибка LinkFixer: запрос отвалился по таймауту")
-    except telegram.error.BadRequest as e:
-        if "Message_too_long" in str(e):
-            print("⚠️ Ошибка LinkFixer: текст слишком длинный")
-        else:
-            print(f"⚠️ Ошибка LinkFixer (BadRequest): {e}")
     except Exception as e:
         print(f"⚠️ Ошибка LinkFixer: {e}")

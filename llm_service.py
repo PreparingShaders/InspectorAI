@@ -7,8 +7,8 @@ from google import genai
 from google.genai import types
 from google.genai.types import Content
 from collections import defaultdict
-from telegram.helpers import escape_markdown
 from telegram.error import BadRequest
+import html
 
 from config import (
     GEMINI_API_KEY, OPEN_ROUTER_API_KEY, WORKER_URL, NUTRITION_MODELS,
@@ -16,7 +16,7 @@ from config import (
     DEFAULT_OPENROUTER_MODELS, GEMINI_MODELS, API_TIMEOUT
 )
 from web_utils import get_web_context
-from utils import safe_format_to_html, get_model_short_name
+from utils import to_html, get_model_short_name
 
 # --- Инициализация клиентов ---
 or_client = OpenAI(
@@ -159,12 +159,17 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
 
     if reply_text:
         used_model_name = get_model_short_name(used_model_path, used_prov)
-        clean_header = escape_markdown(f"{used_prov.capitalize()}: {used_model_name}", version=2)
-        final_text = f"*{clean_header}*\n\n{escape_markdown(reply_text, version=2)}"
+        header = f"<b>{html.escape(used_prov.capitalize())}: {html.escape(used_model_name)}</b>"
+        formatted_body = to_html(reply_text)
+        final_text = f"{header}\n\n{formatted_body}"
         try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=final_text, parse_mode="MarkdownV2")
-        except BadRequest:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=f"📋 Ответ (без разметки):\n\n{reply_text}")
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=final_text, parse_mode="HTML")
+        except BadRequest as e:
+            if "message is not modified" in str(e):
+                pass
+            else:
+                fallback_text = f"Ответ от {used_model_name}:\n\n{reply_text}"
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=fallback_text)
     else:
         if status_msg:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text="😔 Не удалось получить ответ от моделей. Попробуйте позже.")

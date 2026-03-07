@@ -22,39 +22,44 @@ ALLOWED_USER_IDS = [
     941943738,
     1308761656,
     7723919865,
+    7015658962,
 ]
 
 # ─── Модели по умолчанию (Fallback) ───────────────────────
 DEFAULT_OPENROUTER_MODELS = [
-    "arcee-ai/trinity-large-preview:free",
-    "openrouter/pony-alpha",
     "stepfun/step-3.5-flash:free",
-    "google/gemma-2-9b-it:free",
-    'tngtech/deepseek-r1t2-chimera:free',
-    'tngtech/deepseek-r1t-chimera:free',
+    "arcee-ai/trinity-large-preview:free",
     'z-ai/glm-4.5-air:free',
-    "qwen/qwen-2-7b-instruct:free",
+    'nvidia/nemotron-3-nano-30b-a3b:free',
+    'arcee-ai/trinity-mini:free',
+    "openrouter/pony-alpha",
 ]
 
 GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.0-flash",
-    "gemini-3-flash-preview",
     "gemini-2.5-flash-lite",
+    'gemini-3.1-flash-lite-preview',
+    "gemini-3-flash-preview"
 ]
 
 NUTRITION_MODELS = [
     # 2. СПЕЦИАЛИЗИРОВАННЫЕ VISION-МОДЕЛИ (Твоя потеряшка тут!)
+    'gemini-3.1-flash-lite-preview',
+    'gemini-2.5-flash-lite',
     'gemini-2.5-flash-image',  # Оптимизирована именно под работу с фото
     'gemini-3.1-flash-image-preview',  # Новейшая экспериментальная модель
-
-    # 1. ТОП-УРОВЕНЬ (Твои находки с "мышлением")
-    'qwen/qwen3-vl-30b-a3b-thinking',  # Чуть быстрее, но такая же "думающая"
-    'qwen/qwen3-vl-235b-a22b-thinking',  # Самая умная, разберет состав до грамма
-    
     # 3. СТАБИЛЬНЫЙ БЭКАП (Быстрые и надежные)
     'gemini-2.5-flash',  # Высокая квота и скорость
-    'gemini-2.0-flash'
+    'gemini-2.0-flash',
+    'openai/gpt-5-nano',
+    'google/gemini-2.5-flash-lite',
+
+    # 1. ТОП-УРОВЕНЬ (Твои находки с "мышлением")
+    'qwen/qwen3-vl-235b-a22b-thinking',
+    'qwen/qwen3-vl-30b-a3b-thinking',  # Чуть быстрее, но такая же "думающая",
+    'nvidia/nemotron-nano-12b-v2-vl:free'
+
 ]
 
 
