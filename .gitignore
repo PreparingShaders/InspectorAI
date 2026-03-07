@@ -11,3 +11,5 @@ __pycache__/
 .DS_Store
 .env
 finance_db.json
+nutrition.db
+*.db

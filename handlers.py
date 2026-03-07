@@ -1,4 +1,7 @@
 #handlers
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='telegram.ext')
+
 import re
 import logging
 import json
@@ -30,12 +33,12 @@ from nutrition import (
 )
 from utils import handle_voice_transcription, get_model_short_name
 from config import (
-    CORRECT_PASSWORD, AUTH_QUESTION, TRIGGERS, CHECK_WORDS,
+    ALLOWED_USER_IDS, AUTH_QUESTION, TRIGGERS, CHECK_WORDS,
     GEMINI_MODELS, FINANCE_WORDS, NUTRITION_TRIGGERS, NUTRITION_MODELS
 )
 
 # ... (состояния)
-authorized_users = set()
+authorized_users = set(ALLOWED_USER_IDS)
 user_selected_model = {}
 user_selected_nutrition_model = {}
 user_selected_provider = {}
@@ -55,27 +58,57 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
 
 def parse_llm_json(response_text: str) -> dict | None:
     """
-    NEW: Гибко парсит JSON из ответа LLM.
-    Сначала ищет блок ```json, если не находит - пытается парсить весь текст.
+    Гибко парсит JSON из ответа LLM, захватывая текст перед JSON как комментарий.
     """
     if not response_text:
         return None
-    
-    # Попытка 1: Найти экранированный блок JSON
-    match = re.search(r'```json\n(.*?)\n```', response_text, re.DOTALL)
+
+    match = re.search(r'(.*?)```json\n(.*?)\n```', response_text, re.DOTALL)
+
     if match:
+        comment_text = match.group(1).strip()
+        json_text = match.group(2)
         try:
-            return json.loads(match.group(1))
+            data = json.loads(json_text)
+            if comment_text:
+                data['comment'] = comment_text
+            return data
         except json.JSONDecodeError:
             logging.warning("Найден блок JSON, но не удалось его распарсить.")
-            pass # Переходим к следующей попытке
+            pass
 
-    # Попытка 2: Считать весь текст как JSON
     try:
         return json.loads(response_text)
     except json.JSONDecodeError:
         logging.error(f"Не удалось распарсить как JSON весь текст: {response_text}")
         return None
+
+def format_meal_data_for_display(meal_data: dict, model_name: str | None) -> str:
+    """Форматирует данные о еде из JSON в красивый HTML-текст, включая комментарий и имя модели."""
+    if not meal_data:
+        return "Не удалось распознать данные о еде."
+
+    comment = meal_data.get('comment', '')
+    if comment:
+        comment = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', comment)
+        comment = re.sub(r'^\s*[\*\-]\s*', '• ', comment, flags=re.MULTILINE)
+
+    text = ""
+    if model_name:
+        short_model_name = get_model_short_name(model_name, "gemini" if "gemini" in model_name else "openrouter")
+        text += f"🤖 <b>Модель:</b> <code>{short_model_name}</code>\n\n"
+
+    if comment:
+        text += f"<i>{comment}</i>\n\n"
+
+    text += (
+        f"<b>📊 Оценка КБЖУ:</b>\n"
+        f"🔥 Калории: <code>{meal_data.get('calories', 0)}</code>\n"
+        f"🥩 Белки: <code>{meal_data.get('proteins', 0)} г</code>\n"
+        f"🥑 Жиры: <code>{meal_data.get('fats', 0)} г</code>\n"
+        f"🍞 Углеводы: <code>{meal_data.get('carbs', 0)} г</code>"
+    )
+    return text
 
 async def show_nutrition_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ... (код без изменений)
@@ -119,25 +152,79 @@ async def show_nutrition_stats(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.effective_message.reply_text("\n".join(message), parse_mode="MarkdownV2")
 
 async def get_recipe_suggestion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (код без изменений)
     user_id = update.effective_user.id
     if user_id not in authorized_users:
         await update.effective_message.reply_text(AUTH_QUESTION)
         return
-    remaining = get_remaining_macros(user_id)
-    if not remaining:
-        await update.effective_message.reply_text("Сначала настрой профиль: /profile")
+
+    profile = get_user_profile(user_id)
+    if not profile:
+        await update.effective_message.reply_text("Сначала нужно настроить профиль: /profile")
         return
-    priority = max(remaining, key=lambda k: remaining[k] if 'calories' not in k else -1)
-    prompt = (
-        f"Ты — саркастичный фитнес-тренер. У твоего подопечного остались лимиты: "
-        f"КБЖУ {remaining['remaining_calories']:.0f}/{remaining['remaining_proteins']:.0f}/{remaining['remaining_fats']:.0f}/{remaining['remaining_carbs']:.0f}. "
-        f"Ему особенно не хватает {priority.replace('remaining_', '')}. "
-        f"Предложи ОДИН максимально простой перекус или снэк. "
-        f"Никаких сложных рецептов. Буквально: 'возьми то, смешай с этим'. "
-        f"Говори кратко, по делу и с легкой иронией. Ответ только на русском."
-    )
+
+    # Сбор данных
+    today_summary = get_daily_summary(user_id)
+    remaining = get_remaining_macros(user_id)
+    historical_data = get_historical_summary(user_id, days=7)
+
+    # Расчет средних значений
+    avg_c, avg_p, avg_f, avg_carb, day_count = 0, 0, 0, 0, 0
+    if historical_data:
+        for day_data in historical_data.values():
+            if day_data:
+                day_count += 1
+                avg_c += day_data['calories']
+                avg_p += day_data['proteins']
+                avg_f += day_data['fats']
+                avg_carb += day_data['carbs']
+        if day_count > 0:
+            avg_c /= day_count
+            avg_p /= day_count
+            avg_f /= day_count
+            avg_carb /= day_count
+
+    # Создание промпта
+    prompt = f"""
+Ты — опытный и вдумчивый ИИ-нутрициолог. Твоя задача — помочь пользователю сбалансировать свой рацион на остаток дня.
+
+Вот полная картина по пользователю:
+
+1.  **Дневной план (цель):**
+    *   Калории: {profile['target_calories']}
+    *   Белки: {profile['target_proteins']} г
+    *   Жиры: {profile['target_fats']} г
+    *   Углеводы: {profile['target_carbs']} г
+
+2.  **Уже съедено за сегодня:**
+    *   Калории: {int(today_summary['total_calories'])}
+    *   Белки: {int(today_summary['total_proteins'])} г
+    *   Жиры: {int(today_summary['total_fats'])} г
+    *   Углеводы: {int(today_summary['total_carbs'])} г
+
+3.  **Осталось на сегодня:**
+    *   Калории: {int(remaining['remaining_calories'])}
+    *   Белки: {int(remaining['remaining_proteins'])} г
+    *   Жиры: {int(remaining['remaining_fats'])} г
+    *   Углеводы: {int(remaining['remaining_carbs'])} г
+
+4.  **Контекст (средние показатели за неделю):**
+    *   Средние калории: {int(avg_c)}
+    *   Средние белки: {int(avg_p)} г
+    *   Средние жиры: {int(avg_f)} г
+    *   Средние углеводы: {int(avg_carb)} г
+
+**Твоя задача:**
+Проанализируй ситуацию и дай пользователю четкий, поддерживающий и выполнимый совет.
+
+*   **Если калории уже превышены:** Прямо скажи об этом. Посоветуй больше сегодня не есть и, возможно, добавить легкую активность (например, прогулку). Успокой, что один день — не катастрофа.
+*   **Если есть дефицит:** Предложи 1-2 **конкретных и простых** варианта приема пищи (например, "Греческий йогурт с горстью ягод" или "Куриная грудка на гриле с овощным салатом"), чтобы закрыть оставшиеся потребности. Сделай акцент на тех нутриентах, которых не хватает больше всего.
+*   **Если ситуация смешанная** (например, жиры превышены, а белки в дефиците): Объясни это. Предложи очень легкие, богатые белком и почти безжировые варианты.
+
+Говори на русском языке, кратко и по делу. Твой тон — заботливый профессионал.
+"""
+    await update.effective_message.reply_text("🤔 Анализирую ваш рацион и думаю, что предложить... один момент.")
     await process_llm(update, context, prompt, mode="chat")
+
 
 async def cheat_meal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (код без изменений)
@@ -149,8 +236,7 @@ async def cheat_meal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return CHEAT_MEAL_INPUT
 
 async def cheat_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """UPDATED: Использует новую функцию parse_llm_json."""
-    user_id = update.effective_user.id
+    user_id = update.message.from_user.id
     message = update.message
     photo = message.photo[-1] if message.photo else None
     text_input = message.text or message.caption or ""
@@ -161,21 +247,24 @@ async def cheat_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if photo:
         photo_file = await photo.get_file()
         image_data = await photo_file.download_as_bytearray()
-    prompt = f"Оцени КБЖУ для этого блюда. Описание: '{text_input}'. Ответь только JSON-объектом вида: {{'calories': X, 'proteins': Y, 'fats': Z, 'carbs': W}}"
-    llm_response = await process_llm(
-        update, context, prompt, mode="nutrition", image_data=image_data,
-        selected_model=user_selected_nutrition_model.get(user_id)
-    )
     
-    meal_data = parse_llm_json(llm_response) # Используем новый парсер
+    model_to_use = user_selected_nutrition_model.get(user_id)
+    llm_response, used_model_path = await process_llm(
+        update, context, text_input, mode="nutrition", image_data=image_data,
+        selected_model=model_to_use,
+        suppress_direct_reply=True
+    )
+
+    meal_data = parse_llm_json(llm_response)
 
     if meal_data:
         context.user_data['cheat_meal_data'] = meal_data
+        formatted_text = format_meal_data_for_display(meal_data, model_name=used_model_path)
         keyboard = [[InlineKeyboardButton("Да, я это съел", callback_data="confirm_cheat"), InlineKeyboardButton("Нет, отмена", callback_data="cancel_cheat")]]
         await message.reply_text(
-            f"Я думаю, это было примерно на {meal_data.get('calories', 0)} ккал. "
-            f"Записать этот прием пищи и скорректировать остаток на сегодня?",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"{formatted_text}\n\nЗаписать этот прием пищи и скорректировать остаток на сегодня?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
         )
         return CHEAT_MEAL_CONFIRM
     else:
@@ -328,26 +417,113 @@ async def profile_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data.clear()
     return ConversationHandler.END
 
+def create_progress_bar(percentage: int, length: int = 10) -> str:
+    """Генерирует текстовый прогресс-бар."""
+    # Ограничиваем процент до 100 для корректного отображения бара
+    display_percentage = min(percentage, 100)
+    filled_length = int(length * display_percentage / 100)
+    bar = '▇' * filled_length + '░' * (length - filled_length)
+    return f"[{bar}] {percentage}%"
+
+def get_dynamic_status_text(consumed: int, target: int, nutrient_type: str) -> str:
+    """Генерирует динамический текстовый статус для макронутриента."""
+    if target <= 0:
+        return ""
+
+    percentage = int((consumed / target) * 100)
+    remaining = target - consumed
+    diff_text = f"{abs(int(remaining))}"
+
+    if nutrient_type == "calories":
+        if percentage < 30:
+            return f"Осталось: {diff_text} ккал | Начало положено! 🏁"
+        elif 30 <= percentage < 60:
+            return f"Осталось: {diff_text} ккал | Разгон взят, полёт нормальный ✈️"
+        elif 60 <= percentage < 90:
+            return f"Осталось: {diff_text} ккал | Почти у цели, аккуратнее с перекусами 🧐"
+        elif 90 <= percentage <= 105:
+            prefix = "Осталось" if remaining >= 0 else "Перебор"
+            return f"{prefix}: {diff_text} ккал | Идеальное попадание! 🎯 Ювелирная точность."
+        elif 105 < percentage <= 115:
+            return f"Перебор: {diff_text} ккал | Чуть выше нормы, не критично 🤏"
+        else: # Свыше 115%
+            return f"Перебор: {diff_text} ккал | Финита ля комедия... 💀 Завтра будет новый день!"
+
+    if nutrient_type == "proteins":
+        if consumed < target:
+            return f"Осталось: {remaining} | Нужно поднажать 🥩"
+        else:
+            return f"Сверх нормы: +{abs(remaining)} | Мощно! Мышцы скажут спасибо 💪"
+
+    if nutrient_type == "fats":
+        if percentage > 110:
+            return f"Перебор: {abs(remaining)} | Значительный! 🔴"
+        elif percentage > 100:
+            return f"Перебор: {abs(remaining)} | Небольшой 🟡"
+        elif percentage < 80:
+             return f"Осталось: {remaining} | маловато!"
+        else:
+            return f"Осталось: {remaining} | в норме"
+
+    if nutrient_type == "carbs":
+        if percentage > 110:
+            return f"Перебор: {abs(remaining)} | Значительный! 🔴"
+        elif percentage > 100:
+            return f"Перебор: {abs(remaining)} | Небольшой 🟡"
+        else:
+            return f"Осталось: {remaining} | есть запас"
+
+    return ""
+
 async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.effective_message.reply_text(AUTH_QUESTION)
+        return
+
     target = get_adjusted_target(user_id)
     if not target:
         await update.effective_message.reply_text("Сначала нужно настроить профиль с помощью /profile")
         return
+
     summary = get_daily_summary(user_id)
-    rem_c = target['target_calories'] - summary['total_calories']
-    rem_p = target['target_proteins'] - summary['total_proteins']
-    rem_f = target['target_fats'] - summary['total_fats']
-    rem_carb = target['target_carbs'] - summary['total_carbs']
-    def fmt(val): return f"{val}" if val >= 0 else f"⚠️ {val}"
-    await update.effective_message.reply_text(
-        f"📊 *Статус на сегодня*\n\n"
-        f"🔥 *Калории:*\n`{summary['total_calories']}` из `{target['target_calories']}`\nОсталось: `{fmt(rem_c)}`\n\n"
-        f"🥩 *Белки:*\n`{summary['total_proteins']}` из `{target['target_proteins']}`\nОсталось: `{fmt(rem_p)}`\n\n"
-        f"🥑 *Жиры:*\n`{summary['total_fats']}` из `{target['target_fats']}`\nОсталось: `{fmt(rem_f)}`\n\n"
-        f"🍞 *Углеводы:*\n`{summary['total_carbs']}` из `{target['target_carbs']}`\nОсталось: `{fmt(rem_carb)}`",
-        parse_mode="MarkdownV2"
-    )
+    
+    consumed_c = int(summary['total_calories'])
+    target_c = int(target['target_calories'])
+    percent_c = int((consumed_c / target_c) * 100) if target_c > 0 else 0
+    
+    consumed_p = int(summary['total_proteins'])
+    target_p = int(target['target_proteins'])
+    percent_p = int((consumed_p / target_p) * 100) if target_p > 0 else 0
+
+    consumed_f = int(summary['total_fats'])
+    target_f = int(target['target_fats'])
+    percent_f = int((consumed_f / target_f) * 100) if target_f > 0 else 0
+
+    consumed_carb = int(summary['total_carbs'])
+    target_carb = int(target['target_carbs'])
+    percent_carb = int((consumed_carb / target_carb) * 100) if target_carb > 0 else 0
+
+    text = f"""<b>📊 Статус на сегодня</b>
+
+🔥 <b>Калории:</b> <code>{consumed_c} / {target_c}</code>
+<code>{create_progress_bar(percent_c)}</code>
+{get_dynamic_status_text(consumed_c, target_c, "calories")}
+
+🥩 <b>Белки:</b> <code>{consumed_p} / {target_p}</code>
+<code>{create_progress_bar(percent_p)}</code>
+{get_dynamic_status_text(consumed_p, target_p, "proteins")}
+
+🥑 <b>Жиры:</b> <code>{consumed_f} / {target_f}</code>
+<code>{create_progress_bar(percent_f)}</code>
+{get_dynamic_status_text(consumed_f, target_f, "fats")}
+
+🍞 <b>Углеводы:</b> <code>{consumed_carb} / {target_carb}</code>
+<code>{create_progress_bar(percent_carb)}</code>
+{get_dynamic_status_text(consumed_carb, target_carb, "carbs")}
+"""
+    await update.effective_message.reply_text(text, parse_mode="HTML")
+
 
 profile_setup_handler = ConversationHandler(
     entry_points=[
@@ -380,8 +556,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(AUTH_QUESTION)
 
 async def show_model_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    update_model_mappings()
     user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.effective_message.reply_text(AUTH_QUESTION)
+        return
+
+    update_model_mappings()
     keyboard = []
 
     def create_buttons(models, model_map, prefix, start_idx, selected_model_dict):
@@ -418,6 +598,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ... (код без изменений)
     message = update.message
     if not message or not message.voice: return
+    
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await message.reply_text(AUTH_QUESTION)
+        return
+
     text = await handle_voice_transcription(message)
     if text:
         await message.reply_text(f"🎤 <b>Распознано:</b>\n<i>{text}</i>", parse_mode="HTML")
@@ -427,24 +613,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_private(update, context, voice_text=text)
 
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_text: str = None):
-    """UPDATED: Использует новую функцию parse_llm_json."""
     user_id = update.effective_user.id
     message = update.message
     if not message: return
+    
+    if user_id not in authorized_users:
+        await message.reply_text(AUTH_QUESTION)
+        return
+
     raw_text = voice_text or message.text or message.caption or ""
     photo = message.photo[-1] if message.photo else None
-    if user_id not in authorized_users:
-        if raw_text.strip().lower() == CORRECT_PASSWORD.lower():
-            authorized_users.add(user_id)
-            await message.reply_text(
-                "✅ Доступ разрешен! Теперь у тебя есть кнопки для быстрого доступа.",
-                reply_markup=get_main_keyboard()
-            )
-        else:
-            await message.reply_text(AUTH_QUESTION)
-        return
     
-    # --- Mode Determination ---
     final_prompt = raw_text
     mode = "chat"
     is_forwarded = bool(message.forward_origin)
@@ -463,31 +642,26 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
             return
         photo_file = await photo.get_file()
         image_data = await photo_file.download_as_bytearray()
-        prompt = f"Цели пользователя: {profile['target_calories']} ккал, {profile['target_proteins']} г белка. {raw_text}"
-        llm_response = await process_llm(
-            update, context, prompt, mode="nutrition", image_data=image_data,
-            selected_model=user_selected_nutrition_model.get(user_id)
-        )
         
-        meal_data = parse_llm_json(llm_response) # Используем новый парсер
+        model_to_use = user_selected_nutrition_model.get(user_id)
+        llm_response, used_model_path = await process_llm(
+            update, context, raw_text, mode="nutrition", image_data=image_data,
+            selected_model=model_to_use,
+            suppress_direct_reply=True
+        )
+
+        meal_data = parse_llm_json(llm_response)
 
         if meal_data:
             context.user_data['confirm_meal'] = meal_data
-            text = (
-                f"<b>🤖 Распознано:</b>\n\n"
-                f"🔥 Калории: <code>{meal_data.get('calories', 0)}</code>\n"
-                f"🥩 Белки: <code>{meal_data.get('proteins', 0)} г</code>\n"
-                f"🥑 Жиры: <code>{meal_data.get('fats', 0)} г</code>\n"
-                f"🍞 Углеводы: <code>{meal_data.get('carbs', 0)} г</code>\n\n"
-                f"Сохранить этот прием пищи?"
-            )
+            formatted_text = format_meal_data_for_display(meal_data, model_name=used_model_path)
             keyboard = [
                 [
                     InlineKeyboardButton("✅ Сохранить", callback_data="confirm_meal_save"),
                     InlineKeyboardButton("❌ Отмена", callback_data="confirm_meal_cancel")
                 ]
             ]
-            await message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            await message.reply_text(f"{formatted_text}\n\nСохранить этот прием пищи?", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
             await message.reply_text("Не удалось распознать КБЖУ в ответе. Попробуйте еще раз.")
         return
@@ -500,7 +674,6 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
         await process_llm(
             update, context, final_prompt,
             selected_model=user_selected_model.get(user_id),
-            selected_provider=user_selected_provider.get(user_id),
             mode=mode
         )
 
@@ -575,9 +748,7 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
         final_prompt = user_query
     await process_llm(
         update, context, final_prompt,
-        user_selected_model.get(update.effective_user.id),
-        user_selected_provider.get(update.effective_user.id),
-        thread_id=message.message_thread_id,
+        selected_model=user_selected_model.get(update.effective_user.id),
         mode=mode
     )
 
@@ -585,6 +756,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
+
+    if user_id not in authorized_users:
+        await query.answer(text=AUTH_QUESTION, show_alert=True)
+        return
     
     await query.answer()
 

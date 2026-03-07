@@ -1,6 +1,8 @@
 #main
-import logging
 import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='telegram.ext')
+
+import logging
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,8 +12,6 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-
-warnings.filterwarnings("ignore", category=UserWarning, module='telegram.ext')
 
 from config import BOT_TOKEN
 from handlers import (
@@ -68,7 +68,7 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(MessageHandler(filters.Regex('^📊 Статус$'), show_status))
     app.add_handler(MessageHandler(filters.Regex('^📈 Статистика$'), show_nutrition_stats)) # NEW
-    app.add_handler(MessageHandler(filters.Regex('^❓ Что съесть\?$'), get_recipe_suggestion))
+    app.add_handler(MessageHandler(filters.Regex(r'^❓ Что съесть\?$'), get_recipe_suggestion))
     app.add_handler(MessageHandler(filters.Regex('^🤖 Сменить модель$'), show_model_selection))
     
     # Старые команды для обратной совместимости
