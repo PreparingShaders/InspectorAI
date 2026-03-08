@@ -71,8 +71,8 @@ def parse_llm_json(response_text: str) -> dict | None:
         try:
             data = json.loads(json_text)
             if comment_text:
-                # Убираем to_html, чтобы передать текст "как есть"
-                data['comment'] = comment_text
+                # Возвращаем to_html для правильного форматирования Markdown
+                data['comment'] = to_html(comment_text)
             return data
         except json.JSONDecodeError:
             logging.warning("Найден блок JSON, но не удалось его распарсить.")
@@ -97,8 +97,8 @@ def format_meal_data_for_display(meal_data: dict, model_name: str | None) -> str
         text += f"🤖 <b>Модель:</b> <code>{html.escape(short_model_name)}</code>\n\n"
 
     if comment:
-        # Убираем теги <i> и используем html.escape для безопасного вывода
-        text += f"{html.escape(comment)}\n\n"
+        # Комментарий уже отформатирован в HTML, просто вставляем его
+        text += f"{comment}\n\n"
 
     text += (
         f"<b>📊 Оценка КБЖУ:</b>\n"

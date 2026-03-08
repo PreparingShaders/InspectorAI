@@ -181,7 +181,9 @@ def get_remaining_macros(user_id: int) -> dict:
     }
 
 def apply_cheat_meal_plan(user_id: int, cheat_meal_data: dict):
-    """UPDATED: Использует время MSK."""
+    """
+    FIXED: Читмил теперь просто добавляется в лог, без изменения дневной нормы.
+    """
     if not cheat_meal_data: return
     try:
         with get_db_connection() as conn:
@@ -192,15 +194,10 @@ def apply_cheat_meal_plan(user_id: int, cheat_meal_data: dict):
                 cheat_meal_data.get('description', 'Читмил')
             )
             conn.execute(log_query, log_params)
-            
-            today_str = get_now_in_moscow().date().strftime("%Y-%m-%d")
-            adj_query = "INSERT INTO nutrition_adjustments (user_id, date, calories_adjustment) VALUES (?, ?, ?) ON CONFLICT(user_id, date) DO UPDATE SET calories_adjustment = calories_adjustment + excluded.calories_adjustment;"
-            conn.execute(adj_query, (user_id, today_str, cheat_meal_data['calories']))
-            
             conn.commit()
-        logging.info(f"План спасения (сегодняшний) для {user_id} применен.")
+        logging.info(f"Читмил для {user_id} успешно записан в лог.")
     except sqlite3.Error as e:
-        logging.error(f"Ошибка при применении плана спасения для {user_id}: {e}")
+        logging.error(f"Ошибка при записи читмила для {user_id}: {e}")
 
 def get_historical_summary(user_id: int, days: int = 7) -> dict:
     """UPDATED: Использует время MSK."""
