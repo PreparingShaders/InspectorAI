@@ -11,37 +11,47 @@ model_whisper = WhisperModel("base", device="cpu", compute_type="int8")
 
 def to_html(text: str) -> str:
     """
-    Преобразует Markdown от LLM в безопасный HTML для Telegram.
+    Преобразует Markdown от LLM в безопасный HTML для Telegram,
+    правильно обрабатывая вложенность и экранирование.
     """
     if not text:
         return ""
 
-    # 1. Экранируем основные HTML-символы
-    escaped_text = html.escape(text)
+    # Обрабатываем блочные элементы, такие как код, чтобы их содержимое не форматировалось
+    code_blocks = {}
+    def extract_code_blocks(m):
+        key = f"__CODE_BLOCK_{len(code_blocks)}__"
+        lang = html.escape(m.group(1) or "")
+        code = html.escape(m.group(2))
+        code_blocks[key] = f'<pre><code class="language-{lang}">{code}</code></pre>'
+        return key
 
-    # 2. Заменяем Markdown на HTML-теги
-    # Жирный текст: **text** -> <b>text</b>
-    escaped_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', escaped_text)
-    # Курсив: *text* -> <i>text</i>
-    escaped_text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', escaped_text)
-    # Зачеркнутый: ~~text~~ -> <s>text</s>
-    escaped_text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', escaped_text)
-    # Моноширинный (inline): `text` -> <code>text</code>
-    escaped_text = re.sub(r'`(.*?)`', r'<code>\1</code>', escaped_text)
-    
-    # 3. Списки: преобразуем маркеры в •
-    escaped_text = re.sub(r'^\s*[\*\-]\s+', '• ', escaped_text, flags=re.MULTILINE)
+    processed_text = re.sub(r'```(\w*)\n(.*?)\n```', extract_code_blocks, text, flags=re.DOTALL)
 
-    # 4. Блоки кода: ```lang\ncode``` -> <pre><code class="language-lang">code</code></pre>
-    def code_block_replacer(match):
-        lang = match.group(1) or ""
-        code = match.group(2)
-        # lang может быть пустым, это нормально
-        return f'<pre><code class="language-{lang}">{code}</code></pre>'
-    
-    escaped_text = re.sub(r'```(\w*)\n(.*?)\n```', code_block_replacer, escaped_text, flags=re.DOTALL)
+    # Экранируем весь остальной текст, чтобы предотвратить HTML-инъекции
+    processed_text = html.escape(processed_text)
 
-    return escaped_text
+    # Теперь применяем inline-форматирование к уже экранированному тексту.
+    # Теги <b>, <i> и т.д. не будут экранированы, т.к. мы их добавляем после.
+    replacements = {
+        r'\*\*(.*?)\*\*': r'<b>\1</b>',
+        r'\*(.*?)\*': r'<i>\1</i>',
+        r'~~(.*?)~~': r'<s>\1</s>',
+        r'`(.*?)`': r'<code>\1</code>',
+    }
+    for pattern, replacement in replacements.items():
+        processed_text = re.sub(pattern, replacement, processed_text)
+
+    # Списки (должны идти после inline, чтобы не конфликтовать с `*`)
+    processed_text = re.sub(r'^\s*•\s+', '• ', processed_text, flags=re.MULTILINE) # Восстанавливаем, если было экранировано
+    processed_text = re.sub(r'^\s*[\*\-]\s+', '• ', processed_text, flags=re.MULTILINE)
+    processed_text = re.sub(r'^\s*\d+\.\s+', '• ', processed_text, flags=re.MULTILINE)
+
+    # Возвращаем на место блоки кода
+    for key, block in code_blocks.items():
+        processed_text = processed_text.replace(html.escape(key), block)
+
+    return processed_text
 
 def get_model_short_name(model_path: str, provider: str) -> str:
     if not model_path: return "Auto"
