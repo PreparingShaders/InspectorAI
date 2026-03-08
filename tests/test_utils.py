@@ -1,17 +1,14 @@
-from InspectorAI.utils import safe_format_to_html, get_model_short_name
+from InspectorAI.utils import to_html, get_model_short_name
 
 
-def test_safe_format_to_html():
-    # Проверяем, что жирный текст корректно конвертируется в MarkdownV2 (*)
-    # В MarkdownV2 жирный это *текст*, а не <b>
-    formatted = safe_format_to_html("**bold**")
-    assert "*" in formatted
-    assert "bold" in formatted
+def test_to_html():
+    # Проверяем, что жирный текст корректно конвертируется в <b>
+    formatted = to_html("**bold**")
+    assert "<b>bold</b>" in formatted
 
     # Проверяем моноширинный код
-    formatted_code = safe_format_to_html("`code`")
-    assert "`" in formatted_code
-    assert "code" in formatted_code
+    formatted_code = to_html("`code`")
+    assert "<code>code</code>" in formatted_code
 
 
 def test_model_names():
