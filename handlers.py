@@ -71,7 +71,8 @@ def parse_llm_json(response_text: str) -> dict | None:
         try:
             data = json.loads(json_text)
             if comment_text:
-                data['comment'] = to_html(comment_text)
+                # Убираем to_html, чтобы передать текст "как есть"
+                data['comment'] = comment_text
             return data
         except json.JSONDecodeError:
             logging.warning("Найден блок JSON, но не удалось его распарсить.")
@@ -96,7 +97,8 @@ def format_meal_data_for_display(meal_data: dict, model_name: str | None) -> str
         text += f"🤖 <b>Модель:</b> <code>{html.escape(short_model_name)}</code>\n\n"
 
     if comment:
-        text += f"<i>{comment}</i>\n\n"
+        # Убираем теги <i> и используем html.escape для безопасного вывода
+        text += f"{html.escape(comment)}\n\n"
 
     text += (
         f"<b>📊 Оценка КБЖУ:</b>\n"
@@ -758,10 +760,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         meal_data = context.user_data.pop('confirm_meal', None)
         if meal_data:
             add_food_log(user_id, meal_data)
-            await query.edit_message_text("✅ Прием пищи сохранен!")
+            # Убираем кнопки с исходного сообщения, оставляя его в чате
+            await query.edit_message_reply_markup(reply_markup=None)
+            # Отправляем новое сообщение с подтверждением
+            await context.bot.send_message(chat_id=query.message.chat_id, text="✅ Прием пищи сохранен!")
+            # Показываем обновленный статус отдельным сообщением
             await show_status(update, context)
         else:
-            await query.edit_message_text("❌ Не удалось найти данные о еде. Попробуйте снова.")
+            await query.edit_message_text("❌ Не удалось найти данные о еде для сохранения. Возможно, вы уже сохранили его.")
         return
 
     if data == "confirm_meal_cancel":
