@@ -21,7 +21,6 @@ from handlers.common_handlers import (
 )
 from handlers.nutrition_handlers import (
     profile_setup_handler,
-    cheat_meal_handler,
     show_status,
     get_recipe_suggestion,
     show_nutrition_stats,
@@ -65,7 +64,6 @@ def main():
 
     # 1. Диалоги
     app.add_handler(profile_setup_handler)
-    app.add_handler(cheat_meal_handler)
 
     # 2. Основные команды и кнопки
     app.add_handler(CommandHandler("start", start_command))

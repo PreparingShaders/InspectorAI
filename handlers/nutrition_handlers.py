@@ -19,25 +19,21 @@ from InspectorAI.nutrition import (
     get_user_profile,
     get_daily_summary,
     get_remaining_macros,
-    apply_cheat_meal_plan,
     get_adjusted_target,
     get_historical_summary,
     add_food_log,
 )
 from InspectorAI.config import AUTH_QUESTION
 from InspectorAI.handlers.state import (
-    authorized_users, user_selected_model, user_selected_nutrition_model
+    authorized_users, user_selected_model
 )
 from InspectorAI.handlers.base import (
-    parse_llm_json,
-    format_meal_data_for_display,
     cancel_conversation,
 )
 
 # Conversation states
 (PROFILE_GENDER, PROFILE_AGE, PROFILE_HEIGHT, PROFILE_WEIGHT,
  PROFILE_ACTIVITY, PROFILE_GOAL) = range(6)
-(CHEAT_MEAL_INPUT, CHEAT_MEAL_CONFIRM) = range(6, 8)
 
 
 async def show_nutrition_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,95 +148,6 @@ async def get_recipe_suggestion(update: Update, context: ContextTypes.DEFAULT_TY
     await update.effective_message.reply_text("🤔 Анализирую ваш рацион и думаю, что предложить... один момент.")
     model_to_use = user_selected_model.get(user_id)
     await process_llm(update, context, prompt, mode="chat", selected_model=model_to_use)
-
-
-async def cheat_meal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    if user_id not in authorized_users:
-        await update.effective_message.reply_text(AUTH_QUESTION)
-        return ConversationHandler.END
-    await update.effective_message.reply_text("Пришли фото или подробное описание того, что ты съел, и я оценю масштаб трагедии.")
-    return CHEAT_MEAL_INPUT
-
-
-async def cheat_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.message.from_user.id
-    message = update.message
-    photo = message.photo[-1] if message.photo else None
-    text_input = message.text or message.caption or ""
-    if not photo and not text_input:
-        await message.reply_text("Нужно что-то прислать: фото или текст. Попробуй еще раз или нажми /cancel.")
-        return CHEAT_MEAL_INPUT
-
-    status_msg = await message.reply_text("🍩 Оцениваю масштаб трагедии...")
-
-    image_data = None
-    if photo:
-        photo_file = await photo.get_file()
-        image_data = await photo_file.download_as_bytearray()
-    
-    model_to_use = user_selected_nutrition_model.get(user_id)
-    llm_response, used_model_path = await process_llm(
-        update, context, text_input, mode="nutrition", image_data=image_data,
-        selected_model=model_to_use,
-        suppress_direct_reply=True
-    )
-
-    meal_data = parse_llm_json(llm_response)
-
-    if meal_data:
-        context.user_data['cheat_meal_data'] = meal_data
-        formatted_text = format_meal_data_for_display(meal_data, model_name=used_model_path)
-        keyboard = [[InlineKeyboardButton("Да, я это съел", callback_data="confirm_cheat"), InlineKeyboardButton("Нет, отмена", callback_data="cancel_cheat")]]
-        await status_msg.edit_text(
-            f"{formatted_text}\n\nЗаписать этот прием пищи и скорректировать остаток на сегодня?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
-        return CHEAT_MEAL_CONFIRM
-    else:
-        await status_msg.edit_text("Не смог распознать КБЖУ. Попробуй описать блюдо подробнее или пришли другое фото. Для отмены нажми /cancel.")
-        return CHEAT_MEAL_INPUT
-
-
-async def cheat_meal_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    cheat_data = context.user_data.get('cheat_meal_data')
-    if query.data == 'confirm_cheat':
-        apply_cheat_meal_plan(user_id, cheat_data)
-        new_remaining = get_remaining_macros(user_id)
-        prompt = (
-            f"Ты — поддерживающий ИИ-нутрициолог. Пользователь только что съел лишнего. Его остаток на день теперь: "
-            f"{new_remaining['remaining_calories']:.0f} ккал, {new_remaining['remaining_proteins']:.0f} г белка, "
-            f"{new_remaining['remaining_fats']:.0f} г жиров, {new_remaining['remaining_carbs']:.0f} г углеводов. "
-            f"Не ругай его. Скажи, что все в порядке и читмил уже учтен в сегодняшней норме. "
-            f"Чтобы не ложиться спать голодным, предложи ему на выбор что-то ОЧЕНЬ легкое и низкокалорийное. "
-            f"Также мягко предложи завтра чуть больше подвигаться. Ответ должен быть коротким, позитивным и только на русском."
-        )
-        await query.edit_message_text("Понял. Читмил учтен в сегодняшнем дне. Сейчас дам совет, как жить дальше.")
-        await process_llm(update, context, prompt, mode="chat")
-    else:
-        await query.edit_message_text("Хорошо, отменил. Живи спокойно.")
-    context.user_data.pop('cheat_meal_data', None)
-    return ConversationHandler.END
-
-
-cheat_meal_handler = ConversationHandler(
-    entry_points=[
-        CommandHandler('cheatmeal', cheat_meal_start),
-        MessageHandler(filters.Regex('^🍩 Читмил$'), cheat_meal_start)
-    ],
-    states={
-        CHEAT_MEAL_INPUT: [MessageHandler((filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ Отмена$')) | filters.PHOTO | filters.CAPTION, cheat_meal_input)],
-        CHEAT_MEAL_CONFIRM: [CallbackQueryHandler(cheat_meal_confirm, pattern='^(confirm_cheat|cancel_cheat)$')]
-    },
-    fallbacks=[
-        CommandHandler('cancel', cancel_conversation),
-        MessageHandler(filters.Regex('^❌ Отмена$'), cancel_conversation)
-    ],
-)
 
 
 async def profile_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -491,6 +398,9 @@ async def handle_nutrition_photo(update: Update, context: ContextTypes.DEFAULT_T
 
     photo_file = await photo.get_file()
     image_data = await photo_file.download_as_bytearray()
+    
+    from InspectorAI.handlers.state import user_selected_nutrition_model
+    from InspectorAI.handlers.base import parse_llm_json, format_meal_data_for_display
     
     model_to_use = user_selected_nutrition_model.get(user_id)
     llm_response, used_model_path = await process_llm(

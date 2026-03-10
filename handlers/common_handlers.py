@@ -101,6 +101,9 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
         return
 
     trigger_pattern = rf"^({'|'.join(map(re.escape, TRIGGERS))})\b"
+    if not re.search(trigger_pattern, raw_text.lower()):
+        return
+
     user_query = re.sub(trigger_pattern, '', raw_text, flags=re.IGNORECASE).strip().lstrip(',. ')
     
     is_factcheck = any(word in user_query.lower() for word in CHECK_WORDS)
