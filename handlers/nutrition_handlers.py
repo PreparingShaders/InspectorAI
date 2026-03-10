@@ -28,12 +28,36 @@ from InspectorAI.handlers.state import (
     authorized_users, user_selected_model
 )
 from InspectorAI.handlers.base import (
-    cancel_conversation,
+    cancel_conversation, get_main_keyboard
 )
 
 # Conversation states
 (PROFILE_GENDER, PROFILE_AGE, PROFILE_HEIGHT, PROFILE_WEIGHT,
  PROFILE_ACTIVITY, PROFILE_GOAL) = range(6)
+
+
+def get_nutrition_inline_keyboard() -> InlineKeyboardMarkup:
+    keyboard = [
+        [InlineKeyboardButton("📊 Статус", callback_data="nutrition_status"),
+         InlineKeyboardButton("📈 Статистика", callback_data="nutrition_stats")],
+        [InlineKeyboardButton("❓ Что съесть?", callback_data="nutrition_recipe"),
+         InlineKeyboardButton("⚙️ Профиль", callback_data="nutrition_profile")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def show_nutrition_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.effective_message.reply_text(AUTH_QUESTION)
+        return
+    
+    text = "<b>🥗 Меню Нутрициолога:</b>"
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=get_nutrition_inline_keyboard(), parse_mode="HTML")
+    else:
+        await update.effective_message.reply_text(text, reply_markup=get_nutrition_inline_keyboard(), parse_mode="HTML")
 
 
 async def show_nutrition_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -157,7 +181,9 @@ async def profile_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.message.reply_text("Укажи свой пол:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Мужской", callback_data="male"), InlineKeyboardButton("Женский", callback_data="female")]]))
+        # Удаляем предыдущее сообщение с инлайн-клавиатурой, чтобы не было дублирования
+        await update.callback_query.message.delete()
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Укажи свой пол:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Мужской", callback_data="male"), InlineKeyboardButton("Женский", callback_data="female")]]))
     else:
         await update.effective_message.reply_text("Укажи свой пол:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Мужской", callback_data="male"), InlineKeyboardButton("Женский", callback_data="female")]]))
     return PROFILE_GENDER
@@ -180,7 +206,7 @@ async def profile_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await update.message.reply_text("Введи рост (см):")
         return PROFILE_HEIGHT
     except (ValueError, TypeError):
-        await update.message.reply_text("Это не похоже на возраст. Пожалуйста, введи возраст числом. Для отмены введи /cancel или нажми кнопку '❌ Отмена'.")
+        await update.message.reply_text("Это не похоже на возраст. Пожалуйста, введи возраст числом. Для отмены введи /cancel.")
         return PROFILE_AGE
 
 
@@ -193,7 +219,7 @@ async def profile_height(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Введи вес (кг):")
         return PROFILE_WEIGHT
     except (ValueError, TypeError):
-        await update.message.reply_text("Это не похоже на рост. Пожалуйста, введи рост числом (в см). Для отмены введи /cancel или нажми кнопку '❌ Отмена'.")
+        await update.message.reply_text("Это не похоже на рост. Пожалуйста, введи рост числом (в см). Для отмены введи /cancel.")
         return PROFILE_HEIGHT
 
 
@@ -212,7 +238,7 @@ async def profile_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Уровень активности:", reply_markup=InlineKeyboardMarkup(keyboard))
         return PROFILE_ACTIVITY
     except (ValueError, TypeError):
-        await update.message.reply_text("Это не похоже на вес. Пожалуйста, введи вес числом (в кг). Для отмены введи /cancel или нажми кнопку '❌ Отмена'.")
+        await update.message.reply_text("Это не похоже на вес. Пожалуйста, введи вес числом (в кг). Для отмены введи /cancel.")
         return PROFILE_WEIGHT
 
 
@@ -256,19 +282,18 @@ async def profile_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 profile_setup_handler = ConversationHandler(
     entry_points=[
         CommandHandler('profile', profile_start),
-        MessageHandler(filters.Regex('^⚙️ Профиль$'), profile_start)
+        CallbackQueryHandler(profile_start, pattern='^nutrition_profile$') # Добавляем этот entry_point
     ],
     states={
         PROFILE_GENDER: [CallbackQueryHandler(profile_gender, pattern='^(male|female)$')],
-        PROFILE_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ Отмена$'), profile_age)],
-        PROFILE_HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ Отмена$'), profile_height)],
-        PROFILE_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ Отмена$'), profile_weight)],
+        PROFILE_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_age)],
+        PROFILE_HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_height)],
+        PROFILE_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, profile_weight)],
         PROFILE_ACTIVITY: [CallbackQueryHandler(profile_activity, pattern=r'^1\.')],
         PROFILE_GOAL: [CallbackQueryHandler(profile_goal, pattern='^(weight_loss|recomposition|mass_gain)$')],
     },
     fallbacks=[
         CommandHandler('cancel', cancel_conversation),
-        MessageHandler(filters.Regex('^❌ Отмена$'), cancel_conversation)
     ],
 )
 
@@ -379,7 +404,8 @@ async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <code>{html.escape(create_progress_bar(percent_carb))}</code>
 {html.escape(get_dynamic_status_text(consumed_carb, target_carb, "carbs"))}
 """
-    await update.effective_message.reply_text(text, parse_mode="HTML")
+    # Отправляем новое сообщение, а не редактируем текущее
+    await update.effective_message.reply_text(text, reply_markup=get_nutrition_inline_keyboard(), parse_mode="HTML")
 
 
 async def handle_nutrition_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -448,3 +474,39 @@ async def confirm_meal_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop('confirm_meal', None)
         await query.edit_message_text("❌ Операция отменена.")
         return
+
+
+async def handle_nutrition_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handles callbacks related to nutrition menu."""
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+
+    if not data.startswith("nutrition_") and data != "main_menu":
+        return False
+
+    await query.answer()
+    
+    # Удаляем сообщение с инлайн-клавиатурой, чтобы очистить чат
+    # Это нужно делать только если мы не начинаем ConversationHandler, который сам отправит новое сообщение
+    if data != "nutrition_profile":
+        await query.message.delete()
+
+    if data == "nutrition_status":
+        await show_status(update, context)
+    elif data == "nutrition_stats":
+        await show_nutrition_stats(update, context)
+    elif data == "nutrition_recipe":
+        await get_recipe_suggestion(update, context)
+    elif data == "nutrition_profile":
+        # ConversationHandler будет запущен через entry_points
+        pass
+    elif data == "main_menu":
+        # Отправляем новое сообщение с основной ReplyKeyboardMarkup
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Возвращаемся в главное меню!",
+            reply_markup=get_main_keyboard()
+        )
+    
+    return True

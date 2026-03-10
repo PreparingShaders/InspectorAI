@@ -15,7 +15,8 @@ from InspectorAI.handlers.state import (
     authorized_users, user_selected_model, user_selected_nutrition_model, user_selected_provider
 )
 from InspectorAI.handlers.finance_handlers import handle_group_finance, handle_finance_callback
-from InspectorAI.handlers.nutrition_handlers import handle_nutrition_photo, confirm_meal_callback
+from InspectorAI.handlers.nutrition_handlers import handle_nutrition_photo, confirm_meal_callback, handle_nutrition_callback
+from InspectorAI.handlers.workouts_handlers import handle_workouts_callback # Новый импорт
 
 
 async def show_model_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,6 +157,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await confirm_meal_callback(update, context):
+        return
+
+    if await handle_nutrition_callback(update, context):
+        return
+
+    if await handle_workouts_callback(update, context): # Новый обработчик для тренировок
         return
 
     if data.startswith("sel:"):

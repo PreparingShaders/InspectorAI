@@ -11,9 +11,8 @@ from InspectorAI.config import AUTH_QUESTION
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
-        [KeyboardButton("📊 Статус"), KeyboardButton("📈 Статистика")],
-        [KeyboardButton("❓ Что съесть?"), KeyboardButton("⚙️ Профиль")],
-        [KeyboardButton("🤖 Сменить модель"), KeyboardButton("❌ Отмена")]
+        [KeyboardButton("🥗 Нутрициолог"), KeyboardButton("🏋️ Тренировки")],
+        [KeyboardButton("🤖 Сменить модель")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
