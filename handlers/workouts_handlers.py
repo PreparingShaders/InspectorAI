@@ -9,7 +9,7 @@ from datetime import datetime
 
 from handlers.state import authorized_users
 from config import AUTH_QUESTION, SYSTEM_PROMPT_TRAINER
-from handlers.base import get_main_keyboard, cancel_conversation
+from handlers.base import cancel_conversation
 from llm_service import process_llm
 from workouts import (
     add_workout_template, add_exercise_to_workout, get_workout_templates,
@@ -80,7 +80,10 @@ async def start_add_workout(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.message.delete()
+        try:
+            await update.callback_query.message.delete()
+        except BadRequest as e:
+            logging.warning(f"Could not delete message: {e}")
     
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
@@ -209,6 +212,7 @@ async def confirm_add_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
             logging.info(f"Отменено создание тренировки, удален шаблон workout_id={workout_id}")
         await cancel_conversation(update, context)
         return ConversationHandler.END
+    return ConversationHandler.END # Ensure a return in all paths
 
 # --- Handlers for "My Workouts" ---
 async def show_my_workouts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,6 +420,7 @@ async def confirm_add_exercise_to_existing(update: Update, context: ContextTypes
         context.user_data.pop('current_exercise_reps', None)
         context.user_data.pop('current_exercise_comment', None)
         return ConversationHandler.END
+    return ConversationHandler.END # Ensure a return in all paths
 
 # --- Handlers for editing exercises list ---
 async def start_edit_exercises_list(update: Update, context: ContextTypes.DEFAULT_TYPE, workout_id: int) -> int:
@@ -565,13 +570,13 @@ async def process_edit_exercise_sets(update: Update, context: ContextTypes.DEFAU
         
         workout_id = context.user_data['editing_workout_id']
         await start_edit_exercises_list(update, context, workout_id)
-        context.user_data.pop('editing_field', None)
-        context.user_data.pop('editing_exercise_id', None)
-        context.user_data.pop('editing_exercise_data', None)
-        return EDIT_EXERCISE_SELECT
     except ValueError:
         await update.message.reply_text("Пожалуйста, введите корректное число подходов (целое положительное число).")
         return EDIT_EXERCISE_SETS_STATE
+    context.user_data.pop('editing_field', None)
+    context.user_data.pop('editing_exercise_id', None)
+    context.user_data.pop('editing_exercise_data', None)
+    return EDIT_EXERCISE_SELECT
 
 async def process_edit_exercise_reps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_reps = update.message.text.strip()
@@ -708,8 +713,19 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
         workout_state['current_set_number'] = 1
         return await next_set_or_exercise(update, context)
 
+    total_sets = current_exercise['planned_sets']
+    progress_bar_emojis = []
+    for i in range(1, total_sets + 1):
+        if i < current_set_number:
+            progress_bar_emojis.append("✅") # Выполненный подход
+        elif i == current_set_number:
+            progress_bar_emojis.append("➡️") # Текущий подход
+        else:
+            progress_bar_emojis.append("⬜") # Оставшийся подход
+    progress_bar = " ".join(progress_bar_emojis)
+
     new_text = f"<b>🏋️‍♀️ {html.escape(current_exercise['name'])}</b>\n" \
-               f"Подход {current_set_number} из {current_exercise['planned_sets']}\n"
+               f"{progress_bar}\n"
     
     last_set_data = get_last_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
     
@@ -800,8 +816,20 @@ async def adjust_set_data(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     new_weight = workout_state['current_weight']
     new_reps = workout_state['current_reps']
 
+    total_sets = current_exercise['planned_sets']
+    current_set_number = workout_state['current_set_number']
+    progress_bar_emojis = []
+    for i in range(1, total_sets + 1):
+        if i < current_set_number:
+            progress_bar_emojis.append("✅")
+        elif i == current_set_number:
+            progress_bar_emojis.append("➡️")
+        else:
+            progress_bar_emojis.append("⬜")
+    progress_bar = " ".join(progress_bar_emojis)
+
     new_text = f"<b>🏋️‍♀️ {html.escape(current_exercise['name'])}</b>\n" \
-               f"Подход {workout_state['current_set_number']} из {current_exercise['planned_sets']}\n"
+               f"{progress_bar}\n"
     
     last_set_data = get_last_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
     if last_set_data:
@@ -944,8 +972,8 @@ async def analyze_exercise_progress(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer("Анализирую, один момент...")
 
-    user_id = query.from_user.id
     exercise_id = int(query.data.split(":")[1])
+    user_id = query.from_user.id # user_id is needed for get_exercise_progression
 
     exercise = get_exercise_by_id(exercise_id)
     progression = get_exercise_progression(user_id, exercise_id)
@@ -1055,12 +1083,12 @@ async def handle_workouts_callback(update: Update, context: ContextTypes.DEFAULT
     data = query.data
     user_id = query.from_user.id
 
-    if not (data.startswith("workouts_") or data == "main_menu" or \
-            data.startswith("view_workout:") or \
-            data.startswith("confirm_delete_workout:") or \
-            data.startswith("delete_workout_confirmed:") or \
-            data.startswith("cancel_delete_workout:") or \
-            data.startswith("progress_exercise:") or \
+    if not (data.startswith("workouts_") or data == "main_menu" or
+            data.startswith("view_workout:") or
+            data.startswith("confirm_delete_workout:") or
+            data.startswith("delete_workout_confirmed:") or
+            data.startswith("cancel_delete_workout:") or
+            data.startswith("progress_exercise:") or
             data.startswith("analyze_exercise:")):
         return False
 
