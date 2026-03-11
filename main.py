@@ -23,10 +23,16 @@ from handlers.nutrition_handlers import (
     profile_setup_handler,
     show_nutrition_menu, # Импортируем новую функцию
 )
-from handlers.workouts_handlers import show_workouts_menu # Новый импорт
+from handlers.workouts_handlers import (
+    show_workouts_menu,
+    add_workout_conversation_handler,
+    edit_workout_conversation_handler, # Новый импорт
+    run_workout_conversation_handler # Новый импорт
+)
 from llm_service import update_model_mappings
 from utils import handle_voice_transcription, link_fixer_logic
 from nutrition import init_db as init_nutrition_db
+from workouts import init_db as init_workouts_db # Новый импорт
 
 # Настройка логгирования
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -51,6 +57,7 @@ def main():
         return
     
     init_nutrition_db()
+    init_workouts_db() # Инициализация базы данных тренировок
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -63,6 +70,9 @@ def main():
 
     # 1. Диалоги
     app.add_handler(profile_setup_handler)
+    app.add_handler(add_workout_conversation_handler)
+    app.add_handler(edit_workout_conversation_handler) # Регистрация ConversationHandler для редактирования тренировок
+    app.add_handler(run_workout_conversation_handler) # Регистрация ConversationHandler для запуска тренировок
 
     # 2. Основные команды и кнопки
     app.add_handler(CommandHandler("start", start_command))
