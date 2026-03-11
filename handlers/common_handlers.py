@@ -3,20 +3,20 @@ import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from InspectorAI.config import (
+from config import (
     AUTH_QUESTION, CHECK_WORDS, NUTRITION_TRIGGERS,
     GEMINI_MODELS, NUTRITION_MODELS, TRIGGERS
 )
-from InspectorAI.llm_service import (
+from llm_service import (
     process_llm, update_model_mappings, current_free_or_models
 )
-from InspectorAI.utils import handle_voice_transcription, get_model_short_name
-from InspectorAI.handlers.state import (
+from utils import handle_voice_transcription, get_model_short_name
+from handlers.state import (
     authorized_users, user_selected_model, user_selected_nutrition_model, user_selected_provider
 )
-from InspectorAI.handlers.finance_handlers import handle_group_finance, handle_finance_callback
-from InspectorAI.handlers.nutrition_handlers import handle_nutrition_photo, confirm_meal_callback, handle_nutrition_callback
-from InspectorAI.handlers.workouts_handlers import handle_workouts_callback # Новый импорт
+from handlers.finance_handlers import handle_group_finance, handle_finance_callback
+from handlers.nutrition_handlers import handle_nutrition_photo, confirm_meal_callback, handle_nutrition_callback
+from handlers.workouts_handlers import handle_workouts_callback # Новый импорт
 
 
 async def show_model_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -120,7 +120,8 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE, voice
         await process_llm(
             update, context, final_prompt,
             selected_model=user_selected_model.get(update.effective_user.id),
-            mode=mode
+            mode=mode,
+            thread_id=message.message_thread_id
         )
 
 

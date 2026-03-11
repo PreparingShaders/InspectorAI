@@ -5,7 +5,7 @@ import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, error
 from telegram.ext import ContextTypes
 
-from InspectorAI.finance import (
+from finance import (
     register_user,
     apply_expense,
     get_detailed_report,
@@ -13,9 +13,9 @@ from InspectorAI.finance import (
     settle_debt,
     load_db,
 )
-from InspectorAI.config import TRIGGERS, FINANCE_WORDS
-from InspectorAI.handlers.state import user_selected_model
-from InspectorAI.llm_service import process_llm
+from config import TRIGGERS, FINANCE_WORDS
+from handlers.state import user_selected_model
+from llm_service import process_llm
 
 
 async def send_participant_selector(update: Update, context: ContextTypes.DEFAULT_TYPE):

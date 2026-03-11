@@ -23,7 +23,7 @@ from handlers.nutrition_handlers import (
     profile_setup_handler,
     show_nutrition_menu, # Импортируем новую функцию
 )
-from InspectorAI.handlers.workouts_handlers import show_workouts_menu # Новый импорт
+from handlers.workouts_handlers import show_workouts_menu # Новый импорт
 from llm_service import update_model_mappings
 from utils import handle_voice_transcription, link_fixer_logic
 from nutrition import init_db as init_nutrition_db

@@ -12,8 +12,8 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-from InspectorAI.llm_service import process_llm
-from InspectorAI.nutrition import (
+from llm_service import process_llm
+from nutrition import (
     calculate_nutrition_plan,
     update_user_profile,
     get_user_profile,
@@ -23,11 +23,11 @@ from InspectorAI.nutrition import (
     get_historical_summary,
     add_food_log,
 )
-from InspectorAI.config import AUTH_QUESTION
-from InspectorAI.handlers.state import (
+from config import AUTH_QUESTION
+from handlers.state import (
     authorized_users, user_selected_model
 )
-from InspectorAI.handlers.base import (
+from handlers.base import (
     cancel_conversation, get_main_keyboard
 )
 

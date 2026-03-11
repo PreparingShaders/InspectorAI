@@ -1,4 +1,4 @@
-from InspectorAI.config import ALLOWED_USER_IDS
+from config import ALLOWED_USER_IDS
 
 # Global state for the application
 authorized_users = set(ALLOWED_USER_IDS)

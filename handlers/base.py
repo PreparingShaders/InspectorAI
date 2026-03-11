@@ -5,8 +5,8 @@ import re
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 
-from InspectorAI.handlers.state import authorized_users
-from InspectorAI.config import AUTH_QUESTION
+from handlers.state import authorized_users
+from config import AUTH_QUESTION
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -43,7 +43,7 @@ def parse_llm_json(response_text: str) -> dict | None:
     if match:
         comment_text, json_text = match.group(1).strip(), match.group(2)
         try:
-            from InspectorAI.utils import to_html
+            from utils import to_html
             data = json.loads(json_text)
             if comment_text:
                 data['comment'] = to_html(comment_text)
@@ -61,7 +61,7 @@ def format_meal_data_for_display(meal_data: dict, model_name: str | None) -> str
     if not meal_data:
         return "Не удалось распознать данные о еде."
     
-    from InspectorAI.utils import get_model_short_name
+    from utils import get_model_short_name
     comment = meal_data.get('comment', '')
     text = ""
     if model_name:

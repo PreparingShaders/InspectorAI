@@ -3,9 +3,9 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from InspectorAI.handlers.state import authorized_users
-from InspectorAI.config import AUTH_QUESTION
-from InspectorAI.handlers.base import get_main_keyboard
+from handlers.state import authorized_users
+from config import AUTH_QUESTION
+from handlers.base import get_main_keyboard
 
 
 def get_workouts_inline_keyboard() -> InlineKeyboardMarkup:
