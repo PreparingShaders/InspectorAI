@@ -33,7 +33,7 @@ def init_db():
                     workout_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
                     planned_sets INTEGER NOT NULL,
-                    planned_reps INTEGER NOT NULL,
+                    planned_reps TEXT NOT NULL,
                     comment TEXT,
                     order_in_workout INTEGER NOT NULL,
                     FOREIGN KEY (workout_id) REFERENCES workouts (workout_id) ON DELETE CASCADE
@@ -123,7 +123,7 @@ def delete_workout_template(workout_id: int, user_id: int):
 # --- Функции для работы с упражнениями в шаблоне ---
 
 def add_exercise_to_workout(
-    workout_id: int, name: str, planned_sets: int, planned_reps: int, comment: str | None
+    workout_id: int, name: str, planned_sets: int, planned_reps: str, comment: str | None
 ) -> int:
     """Добавляет упражнение к шаблону тренировки."""
     with get_db_connection() as conn:
@@ -163,7 +163,7 @@ def get_exercise_by_id(exercise_id: int) -> dict | None:
         return dict(row) if row else None
 
 def update_exercise(
-    exercise_id: int, name: str, planned_sets: int, planned_reps: int, comment: str | None
+    exercise_id: int, name: str, planned_sets: int, planned_reps: str, comment: str | None
 ):
     """Обновляет данные упражнения."""
     with get_db_connection() as conn:
@@ -215,10 +215,10 @@ def add_logged_set(
         )
         conn.commit()
 
-def get_last_set_data_for_exercise(user_id: int, exercise_name: str) -> dict | None:
+def get_last_set_data_for_exercise(user_id: int, exercise_id: int) -> dict | None:
     """
     Возвращает данные последнего выполненного подхода для конкретного упражнения
-    для данного пользователя.
+    (по его ID) для данного пользователя.
     """
     with get_db_connection() as conn:
         cursor = conn.execute(
@@ -230,29 +230,68 @@ def get_last_set_data_for_exercise(user_id: int, exercise_name: str) -> dict | N
                 logged_sets ls
             JOIN
                 logged_workouts lw ON ls.logged_workout_id = lw.logged_workout_id
-            JOIN
-                exercises e ON ls.exercise_id = e.exercise_id
             WHERE
-                lw.user_id = ? AND e.name = ?
+                lw.user_id = ? AND ls.exercise_id = ?
             ORDER BY
                 ls.timestamp DESC
             LIMIT 1
             """,
-            (user_id, exercise_name)
+            (user_id, exercise_id)
         )
         row = cursor.fetchone()
         return dict(row) if row else None
 
-# --- Функции для статистики (базовые) ---
+# --- Функции для статистики ---
 
-def get_total_workouts_logged(user_id: int) -> int:
-    """Возвращает общее количество выполненных тренировок для пользователя."""
+def get_all_unique_exercises(user_id: int) -> list[dict]:
+    """
+    Возвращает список уникальных упражнений, которые пользователь когда-либо выполнял.
+    """
     with get_db_connection() as conn:
         cursor = conn.execute(
-            "SELECT COUNT(*) FROM logged_workouts WHERE user_id = ?",
+            """
+            SELECT DISTINCT
+                e.exercise_id,
+                e.name
+            FROM
+                exercises e
+            JOIN
+                logged_sets ls ON e.exercise_id = ls.exercise_id
+            JOIN
+                logged_workouts lw ON ls.logged_workout_id = lw.logged_workout_id
+            WHERE
+                lw.user_id = ?
+            ORDER BY
+                e.name
+            """,
             (user_id,)
         )
-        return cursor.fetchone()[0]
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_exercise_progression(user_id: int, exercise_id: int) -> list[dict]:
+    """
+    Возвращает полную историю выполненных подходов для конкретного упражнения.
+    """
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT
+                ls.weight,
+                ls.reps_performed,
+                lw.start_time as workout_date
+            FROM
+                logged_sets ls
+            JOIN
+                logged_workouts lw ON ls.logged_workout_id = lw.logged_workout_id
+            WHERE
+                lw.user_id = ? AND ls.exercise_id = ?
+            ORDER BY
+                lw.start_time, ls.set_number
+            """,
+            (user_id, exercise_id)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)

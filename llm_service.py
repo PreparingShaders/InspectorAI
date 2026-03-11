@@ -76,10 +76,12 @@ def update_model_mappings():
 # Вызываем один раз при старте
 update_model_mappings()
 
-async def process_llm(update, context, query, selected_model=None, selected_provider=None, thread_id=None, mode="chat", image_data=None, suppress_direct_reply=False):
+async def process_llm(update, context, query, selected_model=None, selected_provider=None, thread_id=None, mode="chat", image_data=None, suppress_direct_reply=False, system_prompt_override: str | None = None):
     chat_id = update.effective_chat.id
 
-    if mode == "inspector": system_instruction = SYSTEM_PROMPT_INSPECTOR
+    if system_prompt_override:
+        system_instruction = system_prompt_override
+    elif mode == "inspector": system_instruction = SYSTEM_PROMPT_INSPECTOR
     elif mode == "nutrition": system_instruction = SYSTEM_PROMPT_NUTRITION
     else: system_instruction = SYSTEM_PROMPT_CHAT
 
