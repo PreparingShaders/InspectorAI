@@ -748,30 +748,39 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
     
     return LOG_SET_WEIGHT
 
-def get_set_logging_keyboard(current_weight: float, current_reps: int) -> InlineKeyboardMarkup:
-    formatted_weight = f"{current_weight:.1f}".rstrip('0').rstrip('.')
-    if formatted_weight == "":
-        formatted_weight = "0"
 
-    weight_buttons = [
-        InlineKeyboardButton(f"-5 кг", callback_data=f"adjust_weight:-5"),
-        InlineKeyboardButton(f"-2.5 кг", callback_data=f"adjust_weight:-2.5"),
-        InlineKeyboardButton(f"{formatted_weight} кг", callback_data=f"adjust_weight:0"),
-        InlineKeyboardButton(f"+2.5 кг", callback_data=f"adjust_weight:+2.5"),
-        InlineKeyboardButton(f"+5 кг", callback_data=f"adjust_weight:+5")
+def get_set_logging_keyboard(current_weight: float, current_reps: int) -> InlineKeyboardMarkup:
+    formatted_weight = f"{current_weight:.1f}".rstrip('0').rstrip('.') or "0"
+
+    # Сетка для веса: малые шаги по бокам, большие сверху/снизу
+    # [ -5.0 ] [ +5.0 ]
+    # [ -2.5 ] [  ВЕС  ] [ +2.5 ]
+
+    keyboard = [
+        # Ряд 1: Крупный шаг веса
+        [
+            InlineKeyboardButton("-10 кг", callback_data="adjust_weight:-10"),
+            InlineKeyboardButton("+10 кг", callback_data="adjust_weight:+10")
+        ],
+        # Ряд 2: Мелкий шаг и ТЕКУЩИЙ ВЕС (центр)
+        [
+            InlineKeyboardButton("-2.5", callback_data="adjust_weight:-2.5"),
+            InlineKeyboardButton(f"🦾 {formatted_weight} кг", callback_data="adjust_weight:0"),
+            InlineKeyboardButton("+2.5", callback_data="adjust_weight:+2.5")
+        ],
+        # Ряд 3: Повторы (минимум кнопок, только шаг 1)
+        [
+            InlineKeyboardButton("➖", callback_data="adjust_reps:-1"),
+            InlineKeyboardButton(f"🔢 {current_reps} повт.", callback_data="adjust_reps:0"),
+            InlineKeyboardButton("➕", callback_data="adjust_reps:+1")
+        ],
+        # Ряд 4: Главное действие
+        [   InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_set"),
+            InlineKeyboardButton("✅ ПОДТВЕРДИТЬ СЕТ", callback_data="log_set_confirm")
+        ]
     ]
-    reps_buttons = [
-        InlineKeyboardButton(f"-3 повт.", callback_data=f"adjust_reps:-3"),
-        InlineKeyboardButton(f"-1 повт.", callback_data=f"adjust_reps:-1"),
-        InlineKeyboardButton(f"{current_reps} повт.", callback_data=f"adjust_reps:0"),
-        InlineKeyboardButton(f"+1 повт.", callback_data=f"adjust_reps:+1"),
-        InlineKeyboardButton(f"+3 повт.", callback_data=f"adjust_reps:+3")
-    ]
-    action_buttons = [
-        InlineKeyboardButton("✅ Выполнил подход", callback_data="log_set_confirm"),
-        InlineKeyboardButton("⏭️ Пропустить подход", callback_data="skip_set")
-    ]
-    return InlineKeyboardMarkup([weight_buttons, reps_buttons, action_buttons])
+
+    return InlineKeyboardMarkup(keyboard)
 
 async def adjust_set_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
