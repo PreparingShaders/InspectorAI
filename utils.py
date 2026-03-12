@@ -4,6 +4,8 @@ import asyncio
 import html
 from faster_whisper import WhisperModel
 from telegram import LinkPreviewOptions
+from telegram.ext import ApplicationHandlerStop
+from handlers.state import authorized_users
 import telegram
 
 # Инициализируем модель Whisper
@@ -79,7 +81,7 @@ async def link_fixer_logic(update, context):
     message = update.message or update.edited_message
     if not message or not message.from_user: return
 
-    from handlers import authorized_users
+
     if message.from_user.id not in authorized_users:
         return
 
@@ -116,3 +118,5 @@ async def link_fixer_logic(update, context):
         )
     except Exception as e:
         print(f"⚠️ Ошибка LinkFixer: {e}")
+    
+    raise ApplicationHandlerStop
