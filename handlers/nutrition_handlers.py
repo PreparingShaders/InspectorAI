@@ -24,11 +24,11 @@ from nutrition import (
     add_food_log,
 )
 from config import AUTH_QUESTION
-from handlers.state import (
-    authorized_users, user_selected_model
+from .state import (
+    authorized_users, user_selected_model, user_selected_nutrition_model
 )
-from handlers.base import (
-    cancel_conversation, get_main_keyboard
+from .base import (
+    cancel_conversation, get_main_keyboard, parse_llm_json, format_meal_data_for_display
 )
 
 # Conversation states
@@ -424,9 +424,6 @@ async def handle_nutrition_photo(update: Update, context: ContextTypes.DEFAULT_T
 
     photo_file = await photo.get_file()
     image_data = await photo_file.download_as_bytearray()
-    
-    from InspectorAI.handlers.state import user_selected_nutrition_model
-    from InspectorAI.handlers.base import parse_llm_json, format_meal_data_for_display
     
     model_to_use = user_selected_nutrition_model.get(user_id)
     llm_response, used_model_path = await process_llm(
