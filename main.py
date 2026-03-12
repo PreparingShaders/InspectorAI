@@ -3,6 +3,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module='telegram.ext')
 
 import logging
+import asyncio
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -47,7 +48,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
 async def update_models_job(context: ContextTypes.DEFAULT_TYPE):
-    import asyncio
     await asyncio.to_thread(update_model_mappings)
     logging.info("🔄 Динамический список моделей обновлен.")
 

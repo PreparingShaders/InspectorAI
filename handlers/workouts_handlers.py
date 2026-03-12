@@ -1038,12 +1038,12 @@ edit_workout_conversation_handler = ConversationHandler(
         ADD_EXERCISE_REPS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_reps_for_existing_workout)],
         ADD_EXERCISE_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_comment_for_existing_workout)],
         CONFIRM_ADD_EXERCISE: [CallbackQueryHandler(confirm_add_exercise_to_existing, pattern='^(add_another_exercise|finish_workout_creation|cancel_add_workout)$')],
-        EDIT_EXERCISE_SELECT: [CallbackQueryHandler(select_exercise_to_edit, pattern='^edit_ex_select:(\d+)$|^edit_field:.*$|^finish_edit_exercises$|^confirm_del_ex:(\d+)$|^delete_exercise_confirmed:(\d+)$|^cancel_delete_exercise:(\d+)$')],
+        EDIT_EXERCISE_SELECT: [CallbackQueryHandler(select_exercise_to_edit, pattern=r'^edit_ex_select:(\d+)$|^edit_field:.*$|^finish_edit_exercises$|^confirm_del_ex:(\d+)$|^delete_exercise_confirmed:(\d+)$|^cancel_delete_exercise:(\d+)$')],
         EDIT_EXERCISE_NAME_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_exercise_name)],
         EDIT_EXERCISE_SETS_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_exercise_sets)],
         EDIT_EXERCISE_REPS_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_exercise_reps)],
         EDIT_EXERCISE_COMMENT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_exercise_comment)],
-        CONFIRM_DELETE_EXERCISE: [CallbackQueryHandler(confirm_delete_exercise_dialog, pattern='^confirm_del_ex:(\d+)$|^delete_exercise_confirmed:(\d+)$|^cancel_delete_exercise:(\d+)$')]
+        CONFIRM_DELETE_EXERCISE: [CallbackQueryHandler(confirm_delete_exercise_dialog, pattern=r'^confirm_del_ex:(\d+)$|^delete_exercise_confirmed:(\d+)$|^cancel_delete_exercise:(\d+)$')]
     },
     fallbacks=[
         CallbackQueryHandler(cancel_conversation, pattern='^cancel_edit_workout$'),
