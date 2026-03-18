@@ -15,25 +15,28 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
-from handlers.base import start # Import start from base.py
+from handlers.base import start
 from handlers.common_handlers import (
     show_model_selection, handle_private,
     handle_group, callback_handler, handle_voice,
 )
 from handlers.nutrition_handlers import (
     profile_setup_handler,
-    show_nutrition_menu, # Импортируем новую функцию
+    show_nutrition_menu,
 )
 from handlers.workouts_handlers import (
     show_workouts_menu,
     add_workout_conversation_handler,
-    edit_workout_conversation_handler, # Новый импорт
-    run_workout_conversation_handler # Новый импорт
+    edit_workout_conversation_handler,
+    run_workout_conversation_handler
 )
+# Новый импорт для полного анализа
+from handlers.stats_handlers import handle_full_stat 
+
 from llm_service import update_model_mappings
 from utils import handle_voice_transcription, link_fixer_logic
 from nutrition import init_db as init_nutrition_db
-from workouts import init_db as init_workouts_db # Новый импорт
+from workouts import init_db as init_workouts_db
 
 # Настройка логгирования
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -57,7 +60,7 @@ def main():
         return
     
     init_nutrition_db()
-    init_workouts_db() # Инициализация базы данных тренировок
+    init_workouts_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -71,16 +74,18 @@ def main():
     # 1. Диалоги
     app.add_handler(profile_setup_handler)
     app.add_handler(add_workout_conversation_handler)
-    app.add_handler(edit_workout_conversation_handler) # Регистрация ConversationHandler для редактирования тренировок
-    app.add_handler(run_workout_conversation_handler) # Регистрация ConversationHandler для запуска тренировок
+    app.add_handler(edit_workout_conversation_handler)
+    app.add_handler(run_workout_conversation_handler)
 
     # 2. Основные команды и кнопки
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.Regex('^🥗 Нутрициолог$'), show_nutrition_menu)) # Новый обработчик
-    app.add_handler(MessageHandler(filters.Regex('^🏋️ Тренировки$'), show_workouts_menu)) # Новый обработчик
+    app.add_handler(MessageHandler(filters.Regex('^🥗 Нутрициолог$'), show_nutrition_menu))
+    app.add_handler(MessageHandler(filters.Regex('^🏋️ Тренировки$'), show_workouts_menu))
     app.add_handler(MessageHandler(filters.Regex('^🤖 Сменить модель$'), show_model_selection))
+    # Новый обработчик для полного анализа
+    app.add_handler(MessageHandler(filters.Regex('^📊 Полный анализ$'), handle_full_stat))
     
-    # Старые команды для обратной совместимости (удаляем нутрициологические)
+    # Старые команды для обратной совместимости
     app.add_handler(CommandHandler("model", show_model_selection))
 
     # 3. Обработчики сообщений

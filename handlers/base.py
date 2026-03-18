@@ -13,7 +13,7 @@ from utils import to_html, get_model_short_name
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("🥗 Нутрициолог"), KeyboardButton("🏋️ Тренировки")],
-        [KeyboardButton("🤖 Сменить модель")]
+        [KeyboardButton("📊 Полный анализ"), KeyboardButton("🤖 Сменить модель")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
