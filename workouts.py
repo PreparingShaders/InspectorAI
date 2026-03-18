@@ -241,6 +241,33 @@ def get_last_set_data_for_exercise(user_id: int, exercise_id: int) -> dict | Non
         row = cursor.fetchone()
         return dict(row) if row else None
 
+def get_max_set_data_for_exercise(user_id: int, exercise_id: int) -> dict | None:
+    """
+    Возвращает данные подхода с максимальным весом для конкретного упражнения
+    (по его ID) для данного пользователя. Если есть несколько подходов с одинаковым
+    максимальным весом, возвращается тот, у которого больше повторений.
+    """
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT
+                ls.weight,
+                ls.reps_performed
+            FROM
+                logged_sets ls
+            JOIN
+                logged_workouts lw ON ls.logged_workout_id = lw.logged_workout_id
+            WHERE
+                lw.user_id = ? AND ls.exercise_id = ?
+            ORDER BY
+                ls.weight DESC, ls.reps_performed DESC
+            LIMIT 1
+            """,
+            (user_id, exercise_id)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
 # --- Функции для статистики ---
 
 def get_all_unique_exercises(user_id: int) -> list[dict]:

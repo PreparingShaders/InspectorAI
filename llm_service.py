@@ -9,6 +9,7 @@ from google.genai.types import Content
 from collections import defaultdict
 from telegram.error import BadRequest
 import html
+import logging # Import the logging module
 from telegram.constants import MessageLimit # Импортируем лимит сообщений Telegram
 
 from config import (

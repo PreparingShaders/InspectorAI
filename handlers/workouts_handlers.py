@@ -15,7 +15,7 @@ from workouts import (
     add_workout_template, add_exercise_to_workout, get_workout_templates,
     delete_workout_template, get_exercises_for_workout, get_workout_template_by_id,
     update_workout_template_name, update_exercise, delete_exercise,
-    get_last_set_data_for_exercise, start_logged_workout, add_logged_set, end_logged_workout,
+    get_last_set_data_for_exercise, get_max_set_data_for_exercise, start_logged_workout, add_logged_set, end_logged_workout,
     get_exercise_by_id, get_all_unique_exercises, get_exercise_progression
 )
 
@@ -296,8 +296,8 @@ async def confirm_delete_workout_dialog(update: Update, context: ContextTypes.DE
     text = f"Вы уверены, что хотите удалить тренировку '<b>{html.escape(workout['name'])}</b>' и все связанные с ней упражнения?\n" \
            "Это действие необратимо."
     keyboard = [
-        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_workout_confirmed:{workout_id}")],
-        [InlineKeyboardButton("❌ Нет, отмена", callback_data=f"cancel_delete_workout:{workout_id}")]
+        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_workout_confirmed:{workout_id})")],
+        [InlineKeyboardButton("❌ Нет, отмена", callback_data=f"cancel_delete_workout:{workout_id})")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
@@ -727,7 +727,7 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
     new_text = f"<b>🏋️‍♀️ {html.escape(current_exercise['name'])}</b>\n" \
                f"{progress_bar}\n"
     
-    last_set_data = get_last_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
+    last_set_data = get_max_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
     
     suggested_weight = last_set_data['weight'] if last_set_data else 0.0
     if isinstance(current_exercise['planned_reps'], str) and '-' in current_exercise['planned_reps']:
@@ -742,7 +742,7 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
             suggested_reps = 0
 
     if last_set_data:
-        new_text += f"<i>В прошлый раз: {last_set_data['weight']} кг на {last_set_data['reps_performed']} повторений.</i>\n"
+        new_text += f"<i>Ваш максимум: {last_set_data['weight']} кг на {last_set_data['reps_performed']} повторений.</i>\n"
     
     new_text += f"\nКакой вес и количество повторений сейчас?"
 
@@ -831,9 +831,9 @@ async def adjust_set_data(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     new_text = f"<b>🏋️‍♀️ {html.escape(current_exercise['name'])}</b>\n" \
                f"{progress_bar}\n"
     
-    last_set_data = get_last_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
+    last_set_data = get_max_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
     if last_set_data:
-        new_text += f"<i>В прошлый раз: {last_set_data['weight']} кг на {last_set_data['reps_performed']} повторений.</i>\n"
+        new_text += f"<i>Ваш максимум: {last_set_data['weight']} кг на {last_set_data['reps_performed']} повторений.</i>\n"
     
     new_text += f"\nКакой вес и количество повторений сейчас?"
 
