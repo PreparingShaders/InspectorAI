@@ -14,12 +14,15 @@ TOP_N_EXERCISES = 5 # Количество ключевых упражнений
 
 def _calculate_one_rep_max(weight: float, reps: int) -> float:
     """
-    Рассчитывает одноповторный максимум (1ПМ) по формуле Эпли.
+    Рассчитывает одноповторный максимум (1ПМ) по формуле Бржицки.
+    Она считается более точной, чем формула Эпли, особенно для 1-10 повторений.
     """
     if reps < 1:
         return 0
-    # Формула Эпли: вес * (1 + повторения / 30)
-    return weight * (1 + reps / 30)
+    if reps == 1:
+        return weight
+    # Формула Бржицки: вес / (1.0278 - 0.0278 * повторения)
+    return weight / (1.0278 - 0.0278 * reps)
 
 async def get_data_for_full_analysis(user_id: int) -> dict:
     """
@@ -122,4 +125,5 @@ async def get_data_for_full_analysis(user_id: int) -> dict:
     }
 
     logging.info(f"Сбор данных для user_id: {user_id} завершен.")
+    print(final_data)
     return final_data

@@ -31,7 +31,7 @@ from handlers.workouts_handlers import (
     run_workout_conversation_handler
 )
 # Новый импорт для полного анализа
-from handlers.stats_handlers import handle_full_stat 
+from handlers.stats_handlers import full_stat_conversation_handler
 
 from llm_service import update_model_mappings
 from utils import handle_voice_transcription, link_fixer_logic
@@ -76,14 +76,13 @@ def main():
     app.add_handler(add_workout_conversation_handler)
     app.add_handler(edit_workout_conversation_handler)
     app.add_handler(run_workout_conversation_handler)
+    app.add_handler(full_stat_conversation_handler) # <--- ИЗМЕНЕНИЕ ЗДЕСЬ
 
     # 2. Основные команды и кнопки
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(MessageHandler(filters.Regex('^🥗 Нутрициолог$'), show_nutrition_menu))
     app.add_handler(MessageHandler(filters.Regex('^🏋️ Тренировки$'), show_workouts_menu))
     app.add_handler(MessageHandler(filters.Regex('^🤖 Сменить модель$'), show_model_selection))
-    # Новый обработчик для полного анализа
-    app.add_handler(MessageHandler(filters.Regex('^📊 Полный анализ$'), handle_full_stat))
     
     # Старые команды для обратной совместимости
     app.add_handler(CommandHandler("model", show_model_selection))

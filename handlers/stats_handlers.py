@@ -1,40 +1,228 @@
 import logging
 import json
-from telegram import Update
-from telegram.ext import ContextTypes
+import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ContextTypes,
+    ConversationHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    CommandHandler, # <--- ДОБАВЛЕН ИМПОРТ
+    filters,
+)
 
 from full_stat_analyzer import get_data_for_full_analysis
 from llm_service import process_llm
 from config import SYSTEM_PROMPT_FULL_ANALYSIS
-from handlers.state import authorized_users
-# Исправленный импорт
+from handlers.state import authorized_users, user_selected_model
 from handlers.base import get_main_keyboard
+from nutrition import get_user_profile, update_user_profile
 
-async def handle_full_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработчик для команды "Полный анализ".
-    Собирает данные, отправляет их в ИИ и возвращает пользователю анализ.
-    """
+# Состояния для диалога
+(
+    ASK_PROFILE_UPDATE,
+    HANDLE_PROFILE_INPUT,
+    ASK_SLEEP,
+    ASK_ACTIVITY,
+    ASK_METABOLISM,
+    PROCESS_ANALYSIS,
+) = range(6)
+
+# --- Функции диалога ---
+
+async def start_full_stat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало диалога полного анализа."""
     user_id = update.effective_user.id
     if user_id not in authorized_users:
         await update.effective_message.reply_text("Эта функция доступна только авторизованным пользователям.")
-        return
+        return ConversationHandler.END
 
-    await update.effective_message.reply_text("⏳ Собираю и анализирую ваши данные за последние 2 месяца... Это может занять до минуты.")
+    context.user_data["full_analysis_extra"] = {}
+    profile = get_user_profile(user_id)
+
+    if not profile:
+        await update.effective_message.reply_text("Сначала нужно создать профиль. Перейдите в меню 'Нутрициолог' -> 'Профиль'.")
+        return ConversationHandler.END
+
+    context.user_data["profile_data"] = profile
+    profile_text = (
+        f"Текущие данные профиля:\n"
+        f"<b>Возраст:</b> {profile.get('age', 'не указан')}\n"
+        f"<b>Рост:</b> {profile.get('height', 'не указан')} см\n"
+        f"<b>Вес:</b> {profile.get('weight', 'не указан')} кг\n\n"
+        "Данные верны?"
+    )
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Да, все верно", callback_data="profile_correct"),
+            InlineKeyboardButton("✏️ Нет, обновить", callback_data="profile_update"),
+        ]
+    ]
+    await update.effective_message.reply_text(
+        text=profile_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML",
+    )
+    return ASK_PROFILE_UPDATE
+
+
+async def handle_profile_update_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора пользователя по обновлению профиля."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "profile_correct":
+        await query.edit_message_text("Отлично! Теперь несколько необязательных вопросов для более точного анализа.")
+        return await ask_next_question(update, context, "sleep")
+
+    elif query.data == "profile_update":
+        await query.edit_message_text(
+            "Введите новые данные в формате: <b>Возраст, Рост, Вес</b>\n"
+            "Например: 30, 180, 75",
+            parse_mode="HTML",
+        )
+        return HANDLE_PROFILE_INPUT
+
+
+async def handle_profile_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получение и обновление данных профиля."""
+    user_id = update.effective_user.id
+    text = update.effective_message.text
+    match = re.match(r"^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+(\.\d+)?)\s*$", text)
+
+    if not match:
+        await update.effective_message.reply_text(
+            "Неверный формат. Пожалуйста, введите данные как в примере: <b>30, 180, 75</b>",
+            parse_mode="HTML",
+        )
+        return HANDLE_PROFILE_INPUT
+
+    age, height, weight = int(match.group(1)), int(match.group(2)), float(match.group(3))
+    update_user_profile(user_id, age=age, height=height, weight=weight)
+    
+    await update.effective_message.reply_text("Профиль успешно обновлен!")
+    return await ask_next_question(update, context, "sleep")
+
+
+async def ask_next_question(update: Update, context: ContextTypes.DEFAULT_TYPE, question_key: str) -> int:
+    """Задает следующий вопрос из серии."""
+    questions = {
+        "sleep": ("😴 Введите ваше среднее время сна за последний месяц (в часах, например: 7.5)", ASK_SLEEP),
+        "activity": ("🏃‍♂️ Введите средний калораж активности за день (например: 300)", ASK_ACTIVITY),
+        "metabolism": ("🔥 Введите ваш обмен веществ в состоянии покоя (BMR) в ккал (например: 1800)", ASK_METABOLISM),
+    }
+
+    if question_key not in questions:
+        return await process_analysis(update, context)
+
+    text, state = questions[question_key]
+    keyboard = [[InlineKeyboardButton("Пропустить", callback_data=f"skip_{question_key}")]]
+    
+    # Если это первый вопрос, отправляем новое сообщение. Иначе - редактируем.
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text=text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+         await update.effective_message.reply_text(
+            text=text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    return state
+
+
+async def handle_sleep(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка ответа про сон."""
+    text = update.effective_message.text
+    try:
+        sleep_hours = float(text.replace(",", "."))
+        context.user_data["full_analysis_extra"]["avg_sleep_hours"] = sleep_hours
+        await update.effective_message.delete()
+    except (ValueError, TypeError):
+        await update.effective_message.reply_text("Неверный формат. Введите число, например: 7.5")
+        return ASK_SLEEP
+    
+    return await ask_next_question(update, context, "activity")
+
+
+async def handle_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка ответа про активность."""
+    text = update.effective_message.text
+    try:
+        activity_kcal = int(text)
+        context.user_data["full_analysis_extra"]["avg_activity_kcal"] = activity_kcal
+        await update.effective_message.delete()
+    except (ValueError, TypeError):
+        await update.effective_message.reply_text("Неверный формат. Введите целое число, например: 300")
+        return ASK_ACTIVITY
+
+    return await ask_next_question(update, context, "metabolism")
+
+
+async def handle_metabolism(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка ответа про метаболизм."""
+    text = update.effective_message.text
+    try:
+        bmr_kcal = int(text)
+        context.user_data["full_analysis_extra"]["bmr_kcal"] = bmr_kcal
+        await update.effective_message.delete()
+    except (ValueError, TypeError):
+        await update.effective_message.reply_text("Неверный формат. Введите целое число, например: 1800")
+        return ASK_METABOLISM
+
+    # Это был последний вопрос, переходим к анализу
+    # Нужно использовать effective_chat, так как последнее сообщение было удалено
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Спасибо! Начинаю анализ...")
+    return await process_analysis(update, context)
+
+
+async def handle_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка пропуска вопроса."""
+    query = update.callback_query
+    await query.answer()
+    
+    question_key = query.data.split("_")[1]
+    next_questions = {"sleep": "activity", "activity": "metabolism", "metabolism": None}
+    
+    next_key = next_questions.get(question_key)
+    if next_key:
+        return await ask_next_question(update, context, next_key)
+    else:
+        # Пропущен последний вопрос, запускаем анализ
+        await query.edit_message_text("Спасибо! Начинаю анализ...")
+        return await process_analysis(update, context)
+
+
+async def process_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Финальный шаг: сбор всех данных и запуск LLM."""
+    user_id = update.effective_user.id
+    
+    # Сообщение о начале анализа
+    message_to_edit = update.effective_message
+    if update.callback_query:
+        # Если последний был колбэк, то сообщение уже отредактировано
+        pass
+    else:
+        # Если был текстовый ввод, сообщение новое
+        await update.effective_message.reply_text("⏳ Собираю и анализирую ваши данные... Это может занять до минуты.")
 
     try:
-        # 1. Сбор и структурирование данных
         analysis_data = await get_data_for_full_analysis(user_id)
+        
+        # Добавляем опциональные данные
+        if context.user_data.get("full_analysis_extra"):
+            analysis_data["user_additional_data"] = context.user_data["full_analysis_extra"]
 
-        # Проверяем, есть ли хоть какие-то данные для анализа
         if not analysis_data.get('nutrition_summary') and not analysis_data.get('workout_summary', {}).get('progression_analysis'):
-            await update.effective_message.reply_text(
-                "Недостаточно данных для анализа. Пожалуйста, занесите в дневник хотя бы несколько приемов пищи и тренировок.",
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="Недостаточно данных для анализа. Пожалуйста, занесите в дневник хотя бы несколько приемов пищи и тренировок.",
                 reply_markup=get_main_keyboard()
             )
-            return
+            return ConversationHandler.END
 
-        # 2. Формирование промпта для ИИ
         prompt = f"""
 Проанализируй следующие данные моего клиента.
 
@@ -46,23 +234,67 @@ async def handle_full_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Твоя задача:**
 Дай комплексный анализ и рекомендации, следуя этой структуре:
 1.  **Общий вердикт:** Краткое резюме (2-3 предложения), соответствует ли текущий прогресс цели пользователя.
-2.  **Анализ питания:** Оцени, соответствует ли КБЖУ цели и весу. Выяви возможные проблемы (например, недостаток белка).
-3.  **Анализ тренировок:** Оцени прогресс в ключевых упражнениях. Есть ли стагнация (плато)?
-4.  **Ключевые рекомендации:** 3-5 самых важных шагов для пользователя.
+2.  **Анализ питания:** Оцени, соответствует ли КБЖУ цели и весу. Выяви возможные проблемы.
+3.  **Анализ тренировок:** Оцени прогресс в ключевых упражнениях. Есть ли стагнация?
+4.  **Анализ доп. данных:** Если есть `user_additional_data`, кратко проанализируй их (сон, активность, BMR).
+5.  **Ключевые рекомендации:** 3-5 самых важных шагов для пользователя.
 """
-
-        # 3. Отправка в LLM и получение ответа
+        selected_model = user_selected_model.get(user_id)
         await process_llm(
-            update, 
-            context, 
-            prompt, 
-            mode="chat", 
+            update, context, prompt,
+            selected_model=selected_model,
+            mode="chat",
             system_prompt_override=SYSTEM_PROMPT_FULL_ANALYSIS
         )
 
     except Exception as e:
         logging.error(f"Ошибка при создании полного анализа для user_id {user_id}: {e}", exc_info=True)
-        await update.effective_message.reply_text(
-            "Произошла ошибка при подготовке анализа. Попробуйте позже.",
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="Произошла ошибка при подготовке анализа. Попробуйте позже.",
             reply_markup=get_main_keyboard()
-            )
+        )
+    finally:
+        # Очистка временных данных
+        if "full_analysis_extra" in context.user_data:
+            del context.user_data["full_analysis_extra"]
+        if "profile_data" in context.user_data:
+            del context.user_data["profile_data"]
+            
+    return ConversationHandler.END
+
+
+async def cancel_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена диалога."""
+    await update.effective_message.reply_text("Анализ отменен.", reply_markup=get_main_keyboard())
+    # Очистка временных данных
+    if "full_analysis_extra" in context.user_data:
+        del context.user_data["full_analysis_extra"]
+    if "profile_data" in context.user_data:
+        del context.user_data["profile_data"]
+    return ConversationHandler.END
+
+
+# Создание ConversationHandler
+full_stat_conversation_handler = ConversationHandler(
+    entry_points=[MessageHandler(filters.Regex('^📊 Полный анализ$'), start_full_stat)],
+    states={
+        ASK_PROFILE_UPDATE: [CallbackQueryHandler(handle_profile_update_choice)],
+        HANDLE_PROFILE_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_profile_input)],
+        ASK_SLEEP: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_sleep),
+            CallbackQueryHandler(handle_skip, pattern="^skip_sleep$"),
+        ],
+        ASK_ACTIVITY: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_activity),
+            CallbackQueryHandler(handle_skip, pattern="^skip_activity$"),
+        ],
+        ASK_METABOLISM: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metabolism),
+            CallbackQueryHandler(handle_skip, pattern="^skip_metabolism$"),
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_analysis)],
+    per_user=True,
+    per_chat=True,
+)
