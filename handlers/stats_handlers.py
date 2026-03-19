@@ -7,7 +7,7 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler,
     MessageHandler,
-    CommandHandler, # <--- ДОБАВЛЕН ИМПОРТ
+    CommandHandler,
     filters,
 )
 
@@ -200,7 +200,6 @@ async def process_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = update.effective_user.id
     
     # Сообщение о начале анализа
-    message_to_edit = update.effective_message
     if update.callback_query:
         # Если последний был колбэк, то сообщение уже отредактировано
         pass
@@ -211,7 +210,7 @@ async def process_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         analysis_data = await get_data_for_full_analysis(user_id)
         
-        # Добавляем опциональные данные
+        # Добавляем опциональные данные, собранные в диалоге
         if context.user_data.get("full_analysis_extra"):
             analysis_data["user_additional_data"] = context.user_data["full_analysis_extra"]
 
@@ -223,25 +222,63 @@ async def process_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             return ConversationHandler.END
 
-        prompt = f"""
-Проанализируй следующие данные моего клиента.
+        # --- Формирование промпта для ИИ ---
+        prompt_parts = []
 
-Вот данные в формате JSON:
-```json
-{json.dumps(analysis_data, indent=2, ensure_ascii=False)}
-```
+        # 1. Основные данные
+        prompt_parts.append("Проанализируй следующие данные моего клиента:")
+        prompt_parts.append(f"```json\n{json.dumps(analysis_data, indent=2, ensure_ascii=False)}\n```")
 
-**Твоя задача:**
-Дай комплексный анализ и рекомендации, следуя этой структуре:
-1.  **Общий вердикт:** Краткое резюме (2-3 предложения), соответствует ли текущий прогресс цели пользователя.
-2.  **Анализ питания:** Оцени, соответствует ли КБЖУ цели и весу. Выяви возможные проблемы.
-3.  **Анализ тренировок:** Оцени прогресс в ключевых упражнениях. Есть ли стагнация?
-4.  **Анализ доп. данных:** Если есть `user_additional_data`, кратко проанализируй их (сон, активность, BMR).
-5.  **Ключевые рекомендации:** 3-5 самых важных шагов для пользователя.
-"""
+        # 2. Правила коммуникации
+        prompt_parts.append("\n**ПРАВИЛА КОММУНИКАЦИИ:**")
+        prompt_parts.append("- Говори на человеческом языке, избегай сухих цифр и терминов, если их можно объяснить простыми словами.")
+        prompt_parts.append("- Используй метафоры и аналогии, чтобы объяснить сложные концепции (например, 'запас прочности', 'фундамент для рекорда').")
+        prompt_parts.append("- Будь эмпатичным и поддерживающим. Цель - мотивировать, а не критиковать.")
+        prompt_parts.append("- Если данные отсутствуют или неполны, указывай на это и давай рекомендации с осторожностью.")
+        prompt_parts.append("- Структурируй ответ по пунктам, как указано в 'Твоя задача'.")
+
+        # 3. Уровень уверенности (на основе введенных пользователем данных)
+        confidence_notes = []
+        if not analysis_data.get("user_additional_data", {}).get("avg_sleep_hours"):
+            confidence_notes.append("- Данные о среднем времени сна отсутствуют.")
+        if not analysis_data.get("user_additional_data", {}).get("avg_activity_kcal"):
+            confidence_notes.append("- Данные о среднем калораже активности отсутствуют.")
+        if not analysis_data.get("user_additional_data", {}).get("bmr_kcal"):
+            confidence_notes.append("- Данные о базальном метаболизме (BMR) введены пользователем, но не проверены.")
+        
+        if confidence_notes:
+            prompt_parts.append("\n**УРОВЕНЬ УВЕРЕННОСТИ В АНАЛИЗЕ ДОПОЛНИТЕЛЬНЫХ ДАННЫХ:**")
+            prompt_parts.extend(confidence_notes)
+            prompt_parts.append("Инструкция: Давай рекомендации в областях с отсутствующими/непроверенными данными с осторожностью. Например: 'Поскольку у меня нет точных данных о твоем сне, я не могу сделать однозначных выводов, но убедись, что ты спишь достаточно...'")
+
+        # 4. Специальные инструкции для ИИ
+        prompt_parts.append("\n**СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ:**")
+        if analysis_data.get("workout_summary", {}).get("overtrain_risk"):
+            prompt_parts.append("- **ВЫСШИЙ ПРИОРИТЕТ:** Обнаружен риск перетренированности. Твоя первая и главная задача — выразить обеспокоенность и мягко спросить о восстановлении (сон, стресс, питание). НЕ СОВЕТУЙ 'работать усерднее'. Предположи, что может потребоваться неделя отдыха или снижение нагрузки. Сфокусируйся на заботе о здоровье.")
+        
+        if analysis_data.get("user_profile", {}).get("calculated_bmr") and analysis_data.get("user_additional_data", {}).get("bmr_kcal"):
+            prompt_parts.append(f"- Сравни введенный пользователем BMR ({analysis_data['user_additional_data']['bmr_kcal']} ккал) с расчетным ({analysis_data['user_profile']['calculated_bmr']} ккал). Укажи на возможные несоответствия и их влияние на цели.")
+
+        # 5. Структура ответа
+        prompt_parts.append("\n**Твоя задача:**")
+        prompt_parts.append("Дай комплексный анализ и рекомендации, следуя этой структуре:")
+        prompt_parts.append("1.  **Общий вердикт:** Краткое резюме (2-3 предложения), соответствует ли текущий прогресс цели пользователя.")
+        prompt_parts.append("2.  **Анализ питания:** Оцени, соответствует ли КБЖУ цели и весу. Выяви возможные проблемы (например, недостаток белка).")
+        prompt_parts.append("3.  **Анализ тренировок:**")
+        prompt_parts.append("    - Оцени общий прогресс в ключевых упражнениях, используя 'overall_strength_trend'.")
+        prompt_parts.append("    - Для каждого упражнения из 'progression_analysis' проанализируй:")
+        prompt_parts.append("        - 'pr_status' (Индекс 'Свежего Рекорда'): переведи в понятный язык (например, 'давно не было рекордов').")
+        prompt_parts.append("        - 'trend_analysis' (Скользящее среднее): объясни динамику (растет, падает, плато).")
+        prompt_parts.append("        - 'efficiency_analysis' (Матрица 'Объем / Интенсивность'): объясни, что означает 'Efficiency Score' и как он соотносится с 1ПМ (например, 'запас прочности растет').")
+        prompt_parts.append("    - Сделай выводы по 'overtrain_risk', если он активен, следуя специальным инструкциям.")
+        prompt_parts.append("4.  **Анализ доп. данных:** Если есть 'user_additional_data', кратко проанализируй их (сон, активность, BMR), учитывая 'УРОВЕНЬ УВЕРЕННОСТИ'.")
+        prompt_parts.append("5.  **Ключевые рекомендации:** 3-5 самых важных шагов для пользователя, сформулированных эмпатично и мотивирующе.")
+
+        final_prompt = "\n".join(prompt_parts)
+
         selected_model = user_selected_model.get(user_id)
         await process_llm(
-            update, context, prompt,
+            update, context, final_prompt,
             selected_model=selected_model,
             mode="chat",
             system_prompt_override=SYSTEM_PROMPT_FULL_ANALYSIS
