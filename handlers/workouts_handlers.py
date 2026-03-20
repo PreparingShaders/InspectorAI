@@ -203,16 +203,27 @@ async def confirm_add_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode="HTML",
             reply_markup=get_workouts_inline_keyboard()
         )
-        context.user_data.clear()
+        _clear_add_workout_data(context)
         return ConversationHandler.END
     elif data == "cancel_add_workout":
         workout_id = context.user_data.get('current_workout_id')
         if workout_id:
             delete_workout_template(workout_id, update.effective_user.id)
             logging.info(f"Отменено создание тренировки, удален шаблон workout_id={workout_id}")
+        _clear_add_workout_data(context)
         await cancel_conversation(update, context)
         return ConversationHandler.END
     return ConversationHandler.END # Ensure a return in all paths
+
+def _clear_add_workout_data(context: ContextTypes.DEFAULT_TYPE):
+    keys_to_delete = [
+        'current_workout_id', 'current_workout_name', 'exercises_count',
+        'current_exercise_name', 'current_exercise_sets', 'current_exercise_reps',
+        'current_exercise_comment'
+    ]
+    for key in keys_to_delete:
+        if key in context.user_data:
+            del context.user_data[key]
 
 # --- Handlers for "My Workouts" ---
 async def show_my_workouts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -374,18 +385,6 @@ async def start_add_exercise_to_existing(update: Update, context: ContextTypes.D
     )
     return ADD_EXERCISE_NAME
 
-async def get_exercise_name_for_existing_workout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await get_exercise_name(update, context)
-
-async def get_exercise_sets_for_existing_workout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await get_exercise_sets(update, context)
-
-async def get_exercise_reps_for_existing_workout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await get_exercise_reps(update, context)
-
-async def get_exercise_comment_for_existing_workout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await get_exercise_comment(update, context)
-
 async def confirm_add_exercise_to_existing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -400,25 +399,12 @@ async def confirm_add_exercise_to_existing(update: Update, context: ContextTypes
     elif data == "finish_workout_creation":
         workout_id = context.user_data.get('current_workout_id')
         await view_workout_details(update, context, workout_id)
-
-        context.user_data.pop('current_workout_id', None)
-        context.user_data.pop('current_workout_name', None)
-        context.user_data.pop('exercises_count', None)
-        context.user_data.pop('current_exercise_name', None)
-        context.user_data.pop('current_exercise_sets', None)
-        context.user_data.pop('current_exercise_reps', None)
-        context.user_data.pop('current_exercise_comment', None)
+        _clear_add_workout_data(context)
         return ConversationHandler.END
     elif data == "cancel_add_workout":
         workout_id = context.user_data.get('current_workout_id')
         await view_workout_details(update, context, workout_id)
-        context.user_data.pop('current_workout_id', None)
-        context.user_data.pop('current_workout_name', None)
-        context.user_data.pop('exercises_count', None)
-        context.user_data.pop('current_exercise_name', None)
-        context.user_data.pop('current_exercise_sets', None)
-        context.user_data.pop('current_exercise_reps', None)
-        context.user_data.pop('current_exercise_comment', None)
+        _clear_add_workout_data(context)
         return ConversationHandler.END
     return ConversationHandler.END # Ensure a return in all paths
 
@@ -879,14 +865,18 @@ async def end_workout_session(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="🎉 Тренировка завершена! Отличная работа!", reply_markup=get_workouts_inline_keyboard())
     
-    context.user_data.clear()
+    _clear_workout_session_data(context)
     return ConversationHandler.END
+
+def _clear_workout_session_data(context: ContextTypes.DEFAULT_TYPE):
+    if 'active_workout' in context.user_data:
+        del context.user_data['active_workout']
 
 async def cancel_workout_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("❌ Тренировка отменена.", reply_markup=get_workouts_inline_keyboard())
-    context.user_data.clear()
+    _clear_workout_session_data(context)
     return ConversationHandler.END
 
 # --- Statistics Handlers ---
@@ -1033,17 +1023,17 @@ edit_workout_conversation_handler = ConversationHandler(
     ],
     states={
         EDIT_WORKOUT_NAME_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_workout_name)],
-        ADD_EXERCISE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_name_for_existing_workout)],
-        ADD_EXERCISE_SETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_sets_for_existing_workout)],
-        ADD_EXERCISE_REPS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_reps_for_existing_workout)],
-        ADD_EXERCISE_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_comment_for_existing_workout)],
-        CONFIRM_ADD_EXERCISE: [CallbackQueryHandler(confirm_add_exercise_to_existing, pattern='^(add_another_exercise|finish_workout_creation|cancel_add_workout)$')],
-        EDIT_EXERCISE_SELECT: [CallbackQueryHandler(select_exercise_to_edit, pattern=r'^edit_ex_select:(\d+)$|^edit_field:.*$|^finish_edit_exercises$|^confirm_del_ex:(\d+)$|^delete_exercise_confirmed:(\d+)$|^cancel_delete_exercise:(\d+)$')],
+        ADD_EXERCISE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_name)],
+        ADD_EXERCISE_SETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_sets)],
+        ADD_EXERCISE_REPS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_reps)],
+        ADD_EXERCISE_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_comment)],
+        CONFIRM_ADD_EXERCISE: [CallbackQueryHandler(confirm_add_exercise_to_existing)],
+        EDIT_EXERCISE_SELECT: [CallbackQueryHandler(select_exercise_to_edit)],
         EDIT_EXERCISE_NAME_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_exercise_name)],
         EDIT_EXERCISE_SETS_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_exercise_sets)],
         EDIT_EXERCISE_REPS_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_exercise_reps)],
         EDIT_EXERCISE_COMMENT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_exercise_comment)],
-        CONFIRM_DELETE_EXERCISE: [CallbackQueryHandler(confirm_delete_exercise_dialog, pattern=r'^confirm_del_ex:(\d+)$|^delete_exercise_confirmed:(\d+)$|^cancel_delete_exercise:(\d+)$')]
+        CONFIRM_DELETE_EXERCISE: [CallbackQueryHandler(confirm_delete_exercise_dialog)]
     },
     fallbacks=[
         CallbackQueryHandler(cancel_conversation, pattern='^cancel_edit_workout$'),

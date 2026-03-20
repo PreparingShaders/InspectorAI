@@ -33,7 +33,7 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.effective_message.reply_text(
         'Действие отменено.', reply_markup=get_main_keyboard()
     )
-    context.user_data.clear()
+    # context.user_data.clear() # Удаляем очистку, чтобы сохранить user_selected_model и другие данные
     return ConversationHandler.END
 
 

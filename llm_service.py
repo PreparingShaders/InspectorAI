@@ -55,7 +55,7 @@ def fetch_dynamic_models():
                         result.append(m_id)
             return result[:15]
     except requests.exceptions.RequestException as e:
-        print(f"⚠️ Ошибка обновления моделей: {e}")
+        logging.warning(f"Ошибка обновления моделей: {e}")
     return DEFAULT_OPENROUTER_MODELS
 
 def update_model_mappings():
@@ -153,7 +153,7 @@ async def process_llm(update, context, query, selected_model=None, selected_prov
                 chat_histories[chat_id].append(Content(role="model", parts=[types.Part(text=reply_text)]))
                 break
         except Exception as e:
-            print(f"❌ Ошибка {m_path}: {e}")
+            logging.error(f"Ошибка {m_path}: {e}")
             if any(code in str(e) for code in ["404", "401", "model_not_found", "billing", "insufficient_quota"]):
                 BLACKLISTED_MODELS.add(m_path)
 

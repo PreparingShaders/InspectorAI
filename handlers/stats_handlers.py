@@ -28,6 +28,14 @@ from nutrition import get_user_profile, update_user_profile, calculate_nutrition
     PROCESS_ANALYSIS,
 ) = range(6)
 
+# --- Константы для валидации ---
+MIN_SLEEP_HOURS = 1
+MAX_SLEEP_HOURS = 16
+MIN_ACTIVITY_KCAL = 0
+MAX_ACTIVITY_KCAL = 3000
+MIN_BMR_KCAL = 1000
+MAX_BMR_KCAL = 4000
+
 # --- Вспомогательные функции ---
 
 def _validate_and_get_value(text: str, min_val: float, max_val: float, error_msg: str) -> (float | None, str | None):
@@ -38,6 +46,12 @@ def _validate_and_get_value(text: str, min_val: float, max_val: float, error_msg
         return value, None
     except (ValueError, TypeError):
         return None, error_msg
+
+def _clear_user_data_for_analysis(context: ContextTypes.DEFAULT_TYPE):
+    """Очищает временные данные пользователя, связанные с полным анализом."""
+    for key in ["full_analysis_extra", "profile_data"]:
+        if key in context.user_data:
+            del context.user_data[key]
 
 # --- Функции диалога ---
 
@@ -86,20 +100,17 @@ async def handle_profile_input(update: Update, context: ContextTypes.DEFAULT_TYP
 
     age, height, weight = int(match.group(1)), int(match.group(2)), float(match.group(3))
     
-    # --- ИСПРАВЛЕНИЕ ОШИБКИ ---
-    profile_data = get_user_profile(user_id)
+    profile_data = get_user_profile(user_id) # Получаем текущий профиль
     profile_data['age'] = age
     profile_data['height'] = height
     profile_data['weight'] = weight
     
-    # Пересчитываем КБЖУ на основе новых данных
-    new_targets = calculate_nutrition_plan(profile_data)
+    new_targets = calculate_nutrition_plan(profile_data) # Пересчитываем КБЖУ
     profile_data.update(new_targets)
     
-    update_user_profile(user_id, profile_data)
-    # -------------------------
+    update_user_profile(user_id, profile_data) # Обновляем профиль в БД
 
-    context.user_data["profile_data"] = get_user_profile(user_id) # Обновляем данные в контексте
+    context.user_data["profile_data"] = profile_data # Обновляем данные в контексте
     await update.effective_message.reply_text("Профиль успешно обновлен!")
     return await ask_next_question(update, context, "sleep")
 
@@ -120,30 +131,27 @@ async def ask_next_question(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     return state
 
 async def handle_sleep(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    value, error = _validate_and_get_value(update.effective_message.text, 1, 16, "Неверный формат. Введите число, например: 7.5")
+    value, error = _validate_and_get_value(update.effective_message.text, MIN_SLEEP_HOURS, MAX_SLEEP_HOURS, "Неверный формат. Введите число, например: 7.5")
     if error:
         await update.effective_message.reply_text(error)
         return ASK_SLEEP
     context.user_data["full_analysis_extra"]["avg_sleep_hours"] = value
-    # Сообщение больше не удаляется
     return await ask_next_question(update, context, "activity")
 
 async def handle_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    value, error = _validate_and_get_value(update.effective_message.text, 0, 3000, "Неверный формат. Введите целое число, например: 300")
+    value, error = _validate_and_get_value(update.effective_message.text, MIN_ACTIVITY_KCAL, MAX_ACTIVITY_KCAL, "Неверный формат. Введите целое число, например: 300")
     if error:
         await update.effective_message.reply_text(error)
         return ASK_ACTIVITY
     context.user_data["full_analysis_extra"]["avg_activity_kcal"] = value
-    # Сообщение больше не удаляется
     return await ask_next_question(update, context, "metabolism")
 
 async def handle_metabolism(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    value, error = _validate_and_get_value(update.effective_message.text, 1000, 4000, "Неверный формат. Введите целое число, например: 1800")
+    value, error = _validate_and_get_value(update.effective_message.text, MIN_BMR_KCAL, MAX_BMR_KCAL, "Неверный формат. Введите целое число, например: 1800")
     if error:
         await update.effective_message.reply_text(error)
         return ASK_METABOLISM
     context.user_data["full_analysis_extra"]["bmr_kcal"] = value
-    # Сообщение больше не удаляется
     await context.bot.send_message(chat_id=update.effective_chat.id, text="Спасибо! Начинаю анализ...")
     return await process_analysis(update, context)
 
@@ -217,14 +225,12 @@ async def process_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logging.error(f"Ошибка при создании полного анализа для user_id {user_id}: {e}", exc_info=True)
         await context.bot.send_message(user_id, "Произошла ошибка при подготовке анализа.", reply_markup=get_main_keyboard())
     finally:
-        for key in ["full_analysis_extra", "profile_data"]:
-            if key in context.user_data: del context.user_data[key]
+        _clear_user_data_for_analysis(context) # Используем вспомогательную функцию
     return ConversationHandler.END
 
 async def cancel_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.effective_message.reply_text("Анализ отменен.", reply_markup=get_main_keyboard())
-    for key in ["full_analysis_extra", "profile_data"]:
-        if key in context.user_data: del context.user_data[key]
+    _clear_user_data_for_analysis(context) # Используем вспомогательную функцию
     return ConversationHandler.END
 
 full_stat_conversation_handler = ConversationHandler(

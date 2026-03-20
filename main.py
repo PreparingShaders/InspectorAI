@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
-from handlers.base import start
+from handlers.base import start # Импортируем напрямую start
 from handlers.common_handlers import (
     show_model_selection, handle_private,
     handle_group, callback_handler, handle_voice,
@@ -47,8 +47,9 @@ logging.basicConfig(
     level=logging.WARNING
 )
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context)
+# Удаляем start_command, так как теперь используем start напрямую
+# async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     await start(update, context)
 
 async def update_models_job(context: ContextTypes.DEFAULT_TYPE):
     await asyncio.to_thread(update_model_mappings)
@@ -76,10 +77,10 @@ def main():
     app.add_handler(add_workout_conversation_handler)
     app.add_handler(edit_workout_conversation_handler)
     app.add_handler(run_workout_conversation_handler)
-    app.add_handler(full_stat_conversation_handler) # <--- ИЗМЕНЕНИЕ ЗДЕСЬ
+    app.add_handler(full_stat_conversation_handler)
 
     # 2. Основные команды и кнопки
-    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("start", start)) # Используем start напрямую
     app.add_handler(MessageHandler(filters.Regex('^🥗 Нутрициолог$'), show_nutrition_menu))
     app.add_handler(MessageHandler(filters.Regex('^🏋️ Тренировки$'), show_workouts_menu))
     app.add_handler(MessageHandler(filters.Regex('^🤖 Сменить модель$'), show_model_selection))

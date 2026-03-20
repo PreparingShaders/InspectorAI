@@ -60,6 +60,27 @@ async def show_nutrition_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.effective_message.reply_text(text, reply_markup=get_nutrition_inline_keyboard(), parse_mode="HTML")
 
 
+def _calculate_average_nutrition(historical_data: dict) -> dict:
+    """Вычисляет средние значения нутриентов из исторических данных."""
+    total_calories, total_proteins, total_fats, total_carbs, day_count = 0, 0, 0, 0, 0
+    if historical_data:
+        for day_data in historical_data.values():
+            if day_data:
+                day_count += 1
+                total_calories += day_data['calories']
+                total_proteins += day_data['proteins']
+                total_fats += day_data['fats']
+                total_carbs += day_data['carbs']
+    if day_count > 0:
+        return {
+            'avg_c': total_calories / day_count,
+            'avg_p': total_proteins / day_count,
+            'avg_f': total_fats / day_count,
+            'avg_carb': total_carbs / day_count,
+        }
+    return {'avg_c': 0, 'avg_p': 0, 'avg_f': 0, 'avg_carb': 0}
+
+
 async def show_nutrition_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in authorized_users:
@@ -69,35 +90,31 @@ async def show_nutrition_stats(update: Update, context: ContextTypes.DEFAULT_TYP
     if not profile:
         await update.effective_message.reply_text("Сначала нужно настроить профиль: /profile")
         return
-    historical_data = get_historical_summary(user_id, days=7)
+    historical_data = get_historical_summary(user_id, days=21)
     if not historical_data:
         await update.effective_message.reply_text("Пока нет данных для статистики. Начни записывать приемы пищи.")
         return
-    message = ["<b>📈 Статистика за последнюю неделю:</b>\n"]
-    total_calories, total_proteins, total_fats, total_carbs, day_count = 0, 0, 0, 0, 0
-    for i in range(7):
+    message = ["<b>📈 Статистика за последние 3 недели:</b>\n"]
+    for i in range(21):
         day = date.today() - timedelta(days=i)
         day_str, day_name = day.strftime("%Y-%m-%d"), day.strftime("%a")
         day_data = historical_data.get(day_str)
         escaped_date = f"{html.escape(day_name)} {day.day:02d}.{day.month:02d}"
         if day_data:
-            day_count += 1
-            total_calories += day_data['calories']
-            total_proteins += day_data['proteins']
-            total_fats += day_data['fats']
-            total_carbs += day_data['carbs']
             norm_c = profile['target_calories']
             sign = "✅" if day_data['calories'] <= norm_c else "❗️"
             message.append(f"<code>{escaped_date}</code>: {sign} {int(day_data['calories'])} / {norm_c} ккал")
         else:
             message.append(f"<code>{escaped_date}</code>: 😴 Нет данных")
-    if day_count > 0:
-        avg_c, avg_p, avg_f, avg_carb = total_calories / day_count, total_proteins / day_count, total_fats / day_count, total_carbs / day_count
+    
+    avg_data = _calculate_average_nutrition(historical_data)
+    if avg_data['avg_c'] > 0:
         message.append("\n<b>📊 Среднее / Норма:</b>")
-        message.append(f"🔥 <code>{int(avg_c)} / {profile['target_calories']}</code>")
-        message.append(f"🥩 <code>{int(avg_p)} / {profile['target_proteins']}</code>")
-        message.append(f"🥑 <code>{int(avg_f)} / {profile['target_fats']}</code>")
-        message.append(f"🍞 <code>{int(avg_carb)} / {profile['target_carbs']}</code>")
+        message.append(f"🔥 <code>{int(avg_data['avg_c'])} / {profile['target_calories']}</code>")
+        message.append(f"🥩 <code>{int(avg_data['avg_p'])} / {profile['target_proteins']}</code>")
+        message.append(f"🥑 <code>{int(avg_data['avg_f'])} / {profile['target_fats']}</code>")
+        message.append(f"🍞 <code>{int(avg_data['avg_carb'])} / {profile['target_carbs']}</code>")
+    
     await update.effective_message.reply_text("\n".join(message), parse_mode="HTML")
 
 
@@ -113,23 +130,15 @@ async def get_recipe_suggestion(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     today_summary = get_daily_summary(user_id)
-    remaining = get_remaining_macros(user_id)
-    historical_data = get_historical_summary(user_id, days=7)
-
-    avg_c, avg_p, avg_f, avg_carb, day_count = 0, 0, 0, 0, 0
-    if historical_data:
-        for day_data in historical_data.values():
-            if day_data:
-                day_count += 1
-                avg_c += day_data['calories']
-                avg_p += day_data['proteins']
-                avg_f += day_data['fats']
-                avg_carb += day_data['carbs']
-        if day_count > 0:
-            avg_c /= day_count
-            avg_p /= day_count
-            avg_f /= day_count
-            avg_carb /= day_count
+    remaining = {
+        'remaining_calories': profile['target_calories'] - today_summary['total_calories'],
+        'remaining_proteins': profile['target_proteins'] - today_summary['total_proteins'],
+        'remaining_fats': profile['target_fats'] - today_summary['total_fats'],
+        'remaining_carbs': profile['target_carbs'] - today_summary['total_carbs'],
+    }
+    
+    historical_data_21_days = get_historical_summary(user_id, days=21)
+    avg_data_21_days = _calculate_average_nutrition(historical_data_21_days)
 
     prompt = f"""
 Ты — опытный и вдумчивый ИИ-нутрициолог. Твоя задача — помочь пользователю сбалансировать свой рацион на остаток дня.
@@ -154,11 +163,11 @@ async def get_recipe_suggestion(update: Update, context: ContextTypes.DEFAULT_TY
     *   Жиры: {int(remaining['remaining_fats'])} г
     *   Углеводы: {int(remaining['remaining_carbs'])} г
 
-4.  **Контекст (средние показатели за неделю):**
-    *   Средние калории: {int(avg_c)}
-    *   Средние белки: {int(avg_p)} г
-    *   Средние жиры: {int(avg_f)} г
-    *   Средние углеводы: {int(avg_carb)} г
+4.  **Контекст (средние показатели за 21 день):**
+    *   Средние калории: {int(avg_data_21_days['avg_c'])}
+    *   Средние белки: {int(avg_data_21_days['avg_p'])} г
+    *   Средние жиры: {int(avg_data_21_days['avg_f'])} г
+    *   Средние углеводы: {int(avg_data_21_days['avg_carb'])} г
 
 **Твоя задача:**
 Проанализируй ситуацию и дай пользователю четкий, поддерживающий и выполнимый совет.
@@ -487,7 +496,7 @@ async def handle_nutrition_callback(update: Update, context: ContextTypes.DEFAUL
     # Удаляем сообщение с инлайн-клавиатурой, чтобы очистить чат
     # Это нужно делать только если мы не начинаем ConversationHandler, который сам отправит новое сообщение
     if data != "nutrition_profile":
-        await query.message.delete()
+        await query.edit_message_text(text="...") # Редактируем, чтобы убрать клавиатуру
 
     if data == "nutrition_status":
         await show_status(update, context)
