@@ -470,3 +470,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+{'user_profile': {'age': 32, 'height': 185.0, 'weight': 83.0, 'goal': 'weight_loss'}, 'nutrition_summary': {'average_calories': 4409, 'average_proteins': 244, 'average_fats': 219, 'average_carbs': 382, 'logging_days': 3}, 'workout_summary': {'progression_analysis': {'Жим Ногами': [{'date': '2026-03-11', 'weight': 105.0, 'reps': 10, 'estimated_1rm': 140.0}, {'date': '2026-03-12', 'weight': 145.0, 'reps': 3, 'estimated_1rm': 159.5}], 'Приседания в Смите': [{'date': '2026-03-11', 'weight': 67.5, 'reps': 12, 'estimated_1rm': 94.5}, {'date': '2026-03-12', 'weight': 67.5, 'reps': 12, 'estimated_1rm': 94.5}, {'date': '2026-03-18', 'weight': 70.0, 'reps': 12, 'estimated_1rm': 98.0}], 'Становая тяга': [{'date': '2026-03-11', 'weight': 62.5, 'reps': 11, 'estimated_1rm': 85.42}], 'Жим на наклонной в Смите': [{'date': '2026-03-11', 'weight': 55.0, 'reps': 10, 'estimated_1rm': 73.33}], 'Отжимания на брусьях Широким хватом': [{'date': '2026-03-11', 'weight': 32.5, 'reps': 10, 'estimated_1rm': 43.33}]}}}

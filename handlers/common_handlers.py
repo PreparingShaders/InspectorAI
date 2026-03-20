@@ -69,20 +69,30 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE, voi
     raw_text = voice_text or message.text or message.caption or ""
     photo = message.photo[-1] if message.photo else None
     
-    if photo and any(word in (raw_text or "").lower() for word in NUTRITION_TRIGGERS):
-        await handle_nutrition_photo(update, context)
-        return
-
     final_prompt = raw_text
     mode = "chat"
-    if bool(message.forward_origin) or any(word in raw_text.lower() for word in CHECK_WORDS):
+
+    # Приоритет №1: Режим "Инспектор"
+    is_inspector_trigger = bool(message.forward_origin) or \
+                           any(word in raw_text.lower() for word in CHECK_WORDS) or \
+                           (message.reply_to_message and any(word in raw_text.lower() for word in CHECK_WORDS))
+                           
+    if is_inspector_trigger:
         mode = "inspector"
         if message.reply_to_message:
             reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
             final_prompt = f"Контекст: {reply_text}\nВопрос: {raw_text}"
-    elif message.reply_to_message:
-        context_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-        final_prompt = f"КОНТЕКСТ ПРЕДЫДУЩЕГО СООБЩЕНИЯ:\n{context_text}\n\nТЕКУЩИЙ ЗАПРОС:\n{raw_text}"
+        # Если это форвард или обычное сообщение с триггером, final_prompt уже raw_text
+    else:
+        # Приоритет №2: Режим "Нутрициолог" (только если не Инспектор)
+        if photo and any(word in raw_text.lower() for word in NUTRITION_TRIGGERS):
+            await handle_nutrition_photo(update, context)
+            return # Нутрициолог обрабатывает запрос и завершает выполнение
+        
+        # Приоритет №3: Режим "Чат" (если не Инспектор и не Нутрициолог)
+        if message.reply_to_message:
+            context_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+            final_prompt = f"КОНТЕКСТ ПРЕДЫДУЩЕГО СООБЩЕНИЯ:\n{context_text}\n\nТЕКУЩИЙ ЗАПРОС:\n{raw_text}"
 
     if final_prompt:
         await process_llm(

@@ -138,7 +138,7 @@ async def handle_group_finance(update: Update, context: ContextTypes.DEFAULT_TYP
             await message.reply_text("Кому именно ты возвращаешь долг?", reply_markup=InlineKeyboardMarkup(keyboard))
         return True
 
-    # If no finance keyword matched, let it fall through to the general LLM handler
+    # Удален неиспользуемый блок 'return False'
     return False
 
 

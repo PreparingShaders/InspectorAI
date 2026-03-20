@@ -13,7 +13,7 @@ from utils import to_html, get_model_short_name
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("🥗 Нутрициолог"), KeyboardButton("🏋️ Тренировки")],
-        [KeyboardButton("🤖 Сменить модель")]
+        [KeyboardButton("📊 Полный анализ"), KeyboardButton("🤖 Сменить модель")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -33,7 +33,7 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.effective_message.reply_text(
         'Действие отменено.', reply_markup=get_main_keyboard()
     )
-    context.user_data.clear()
+    # context.user_data.clear() # Удаляем очистку, чтобы сохранить user_selected_model и другие данные
     return ConversationHandler.END
 
 
