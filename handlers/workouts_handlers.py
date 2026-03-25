@@ -16,10 +16,12 @@ from workouts import (
     delete_workout_template, get_exercises_for_workout, get_workout_template_by_id,
     update_workout_template_name, update_exercise, delete_exercise,
     get_last_set_data_for_exercise, get_max_set_data_for_exercise, start_logged_workout, add_logged_set, end_logged_workout,
-    get_exercise_by_id, get_all_unique_exercises, get_exercise_progression
+    get_exercise_by_id, get_all_unique_exercises, get_exercise_progression,
+    # НОВОЕ: Импортируем новые функции из workouts.py
+    get_logged_sets_for_exercise, update_logged_set, get_logged_set_by_id
 )
 
-# Conversation states for adding a workout
+# ИЗМЕНЕНО: Добавляем новые состояния для редактирования сета
 (
     ADD_WORKOUT_NAME,
     ADD_EXERCISE_NAME,
@@ -27,7 +29,6 @@ from workouts import (
     ADD_EXERCISE_REPS,
     ADD_EXERCISE_COMMENT,
     CONFIRM_ADD_EXERCISE,
-    # Новые состояния для редактирования/просмотра
     VIEW_WORKOUT_DETAILS,
     EDIT_WORKOUT_NAME_STATE,
     EDIT_EXERCISE_SELECT,
@@ -37,16 +38,17 @@ from workouts import (
     EDIT_EXERCISE_COMMENT_STATE,
     CONFIRM_DELETE_WORKOUT,
     CONFIRM_DELETE_EXERCISE,
-    # Новые состояния для запуска тренировки
     START_WORKOUT_SESSION,
     LOG_SET_WEIGHT,
     LOG_SET_REPS,
     CONFIRM_SET_LOG,
     NEXT_SET_OR_EXERCISE,
-    # Состояния для статистики
     STATS_CHOOSE_EXERCISE,
-    STATS_SHOW_PROGRESS
-) = range(22)
+    STATS_SHOW_PROGRESS,
+    # НОВЫЕ состояния для редактирования выполненного сета
+    EDIT_LOGGED_SET,
+    ADJUST_EDITING_SET
+) = range(24)
 
 def get_workouts_inline_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
@@ -681,8 +683,14 @@ async def start_workout_session(update: Update, context: ContextTypes.DEFAULT_TY
     await update.callback_query.edit_message_text(f"Начинаем тренировку '<b>{html.escape(workout['name'])}</b>'!", parse_mode="HTML")
     return await next_set_or_exercise(update, context)
 
+# ИЗМЕНЕНО: Полностью переработанная функция
 async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    workout_state = context.user_data['active_workout']
+    workout_state = context.user_data.get('active_workout')
+    if not workout_state:
+        logging.warning("next_set_or_exercise вызван без active_workout в user_data.")
+        await update.effective_message.reply_text("Произошла ошибка, сессия тренировки не найдена. Возвращаю в меню.", reply_markup=get_workouts_inline_keyboard())
+        return ConversationHandler.END
+
     exercises = workout_state['exercises']
     current_exercise_index = workout_state['current_exercise_index']
     current_set_number = workout_state['current_set_number']
@@ -697,35 +705,41 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
     if current_set_number > current_exercise['planned_sets']:
         workout_state['current_exercise_index'] += 1
         workout_state['current_set_number'] = 1
+        # Рекурсивный вызов для перехода к следующему упражнению
         return await next_set_or_exercise(update, context)
 
-    total_sets = current_exercise['planned_sets']
-    progress_bar_emojis = []
-    for i in range(1, total_sets + 1):
-        if i < current_set_number:
-            progress_bar_emojis.append("✅") # Выполненный подход
-        elif i == current_set_number:
-            progress_bar_emojis.append("➡️") # Текущий подход
+    # --- НОВАЯ ЧАСТЬ: Формирование общего прогресса по тренировке ---
+    workout_progress_summary = ["<b>План тренировки:</b>"]
+    for i, ex in enumerate(exercises):
+        if i < current_exercise_index:
+            workout_progress_summary.append(f"✅ {html.escape(ex['name'])}")
+        elif i == current_exercise_index:
+            workout_progress_summary.append(f"➡️ <b>{html.escape(ex['name'])}</b>")
         else:
-            progress_bar_emojis.append("⬜") # Оставшийся подход
-    progress_bar = " ".join(progress_bar_emojis)
+            workout_progress_summary.append(f"⬜️ {html.escape(ex['name'])}")
+    workout_progress_summary_text = "\n".join(workout_progress_summary)
+    # --- КОНЕЦ НОВОЙ ЧАСТИ ---
 
-    new_text = f"<b>🏋️‍♀️ {html.escape(current_exercise['name'])}</b>\n" \
-               f"{progress_bar}\n"
-    
+    # Получаем уже выполненные сеты для этого упражнения
+    logged_sets = get_logged_sets_for_exercise(workout_state['logged_workout_id'], current_exercise['exercise_id'])
+
+    # ИЗМЕНЕНО: Текст сообщения теперь включает и общий прогресс
+    new_text = f"{workout_progress_summary_text}\n" \
+               f"------\n" \
+               f"<b>{html.escape(current_exercise['name'])}</b>\n\n" \
+               f"<i>Подход {current_set_number} из {current_exercise['planned_sets']}</i>\n\n"
+
     last_set_data = get_max_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
     
+    # Логика предложения веса и повторений остается прежней
     suggested_weight = last_set_data['weight'] if last_set_data else 0.0
     if isinstance(current_exercise['planned_reps'], str) and '-' in current_exercise['planned_reps']:
         try:
             suggested_reps = int(current_exercise['planned_reps'].split('-')[0])
-        except ValueError:
-            suggested_reps = 0
+        except ValueError: suggested_reps = 0
     else:
-        try:
-            suggested_reps = int(current_exercise['planned_reps'])
-        except (ValueError, TypeError):
-            suggested_reps = 0
+        try: suggested_reps = int(current_exercise['planned_reps'])
+        except (ValueError, TypeError): suggested_reps = 0
 
     if last_set_data:
         new_text += f"<i>Ваш максимум: {last_set_data['weight']} кг на {last_set_data['reps_performed']} повторений.</i>\n"
@@ -735,7 +749,8 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
     workout_state['current_weight'] = suggested_weight
     workout_state['current_reps'] = suggested_reps
 
-    new_reply_markup = get_set_logging_keyboard(suggested_weight, suggested_reps)
+    # ИЗМЕНЕНО: Передаем logged_sets в функцию создания клавиатуры
+    new_reply_markup = get_set_logging_keyboard(suggested_weight, suggested_reps, logged_sets, current_exercise['planned_sets'], current_set_number)
 
     try:
         if update.callback_query:
@@ -743,45 +758,58 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=new_text, reply_markup=new_reply_markup, parse_mode="HTML")
     except BadRequest as e:
-        if "Message is not modified" in str(e):
-            logging.debug("Caught 'Message is not modified' error, ignoring.")
-        else:
-            raise
+        if "Message is not modified" in str(e): logging.debug("Caught 'Message is not modified' error, ignoring.")
+        else: raise
     
     return LOG_SET_WEIGHT
 
-
-def get_set_logging_keyboard(current_weight: float, current_reps: int) -> InlineKeyboardMarkup:
+# ИЗМЕНЕНО: Функция теперь принимает больше параметров для создания интерактивного прогресс-бара
+def get_set_logging_keyboard(current_weight: float, current_reps: int, logged_sets: list, total_sets: int, current_set_num: int) -> InlineKeyboardMarkup:
     formatted_weight = f"{current_weight:.1f}".rstrip('0').rstrip('.') or "0"
 
-    # Сетка для веса: малые шаги по бокам, большие сверху/снизу
-    # [ -5.0 ] [ +5.0 ]
-    # [ -2.5 ] [  ВЕС  ] [ +2.5 ]
+    # --- НОВАЯ ЧАСТЬ: Интерактивный прогресс-бар ---
+    progress_bar_buttons = []
+    logged_sets_map = {s['set_number']: s for s in logged_sets}
+
+    for i in range(1, total_sets + 1):
+        if i in logged_sets_map:
+            # Это выполненный сет, делаем его кнопкой для редактирования
+            set_data = logged_sets_map[i]
+            progress_bar_buttons.append(
+                InlineKeyboardButton(f"✅ {i}", callback_data=f"edit_set:{set_data['logged_set_id']}")
+            )
+        elif i == current_set_num:
+            # Это текущий сет
+            progress_bar_buttons.append(
+                InlineKeyboardButton(f"➡️ {i}", callback_data="noop") # noop - ничего не делать
+            )
+        else:
+            # Это будущий сет
+            progress_bar_buttons.append(
+                InlineKeyboardButton(f"⬜️ {i}", callback_data="noop")
+            )
+    # --- КОНЕЦ НОВОЙ ЧАСТИ ---
 
     keyboard = [
-        # Ряд 1: Крупный шаг веса
+        progress_bar_buttons, # Новый ряд с интерактивным прогресс-баром
         [
             InlineKeyboardButton("-10 кг", callback_data="adjust_weight:-10"),
             InlineKeyboardButton("+10 кг", callback_data="adjust_weight:+10")
         ],
-        # Ряд 2: Мелкий шаг и ТЕКУЩИЙ ВЕС (центр)
         [
             InlineKeyboardButton("-2.5", callback_data="adjust_weight:-2.5"),
             InlineKeyboardButton(f"🦾 {formatted_weight} кг", callback_data="adjust_weight:0"),
             InlineKeyboardButton("+2.5", callback_data="adjust_weight:+2.5")
         ],
-        # Ряд 3: Повторы (минимум кнопок, только шаг 1)
         [
             InlineKeyboardButton("➖", callback_data="adjust_reps:-1"),
             InlineKeyboardButton(f"🔢 {current_reps} повт.", callback_data="adjust_reps:0"),
             InlineKeyboardButton("➕", callback_data="adjust_reps:+1")
         ],
-        # Ряд 4: Главное действие
         [   InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_set"),
             InlineKeyboardButton("✅ ПОДТВЕРДИТЬ СЕТ", callback_data="log_set_confirm")
         ]
     ]
-
     return InlineKeyboardMarkup(keyboard)
 
 async def adjust_set_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -799,23 +827,27 @@ async def adjust_set_data(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         change = int(data.split(":")[1])
         workout_state['current_reps'] = max(0, workout_state['current_reps'] + change)
     
+    # ИЗМЕНЕНО: Эта часть кода дублируется, но для простоты оставим ее здесь.
+    # В идеале, ее можно вынести в отдельную функцию `_update_workout_message`.
     new_weight = workout_state['current_weight']
     new_reps = workout_state['current_reps']
 
-    total_sets = current_exercise['planned_sets']
-    current_set_number = workout_state['current_set_number']
-    progress_bar_emojis = []
-    for i in range(1, total_sets + 1):
-        if i < current_set_number:
-            progress_bar_emojis.append("✅")
-        elif i == current_set_number:
-            progress_bar_emojis.append("➡️")
+    workout_progress_summary = ["<b>План тренировки:</b>"]
+    for i, ex in enumerate(workout_state['exercises']):
+        if i < workout_state['current_exercise_index']:
+            workout_progress_summary.append(f"✅ {html.escape(ex['name'])}")
+        elif i == workout_state['current_exercise_index']:
+            workout_progress_summary.append(f"➡️ <b>{html.escape(ex['name'])}</b>")
         else:
-            progress_bar_emojis.append("⬜")
-    progress_bar = " ".join(progress_bar_emojis)
+            workout_progress_summary.append(f"⬜️ {html.escape(ex['name'])}")
+    workout_progress_summary_text = "\n".join(workout_progress_summary)
 
-    new_text = f"<b>🏋️‍♀️ {html.escape(current_exercise['name'])}</b>\n" \
-               f"{progress_bar}\n"
+    logged_sets = get_logged_sets_for_exercise(workout_state['logged_workout_id'], current_exercise['exercise_id'])
+    
+    new_text = f"{workout_progress_summary_text}\n\n" \
+               f"------\n" \
+               f"<b>Упражнение: {html.escape(current_exercise['name'])}</b>\n" \
+               f"<i>Подход {workout_state['current_set_number']} из {current_exercise['planned_sets']}</i>\n\n"
     
     last_set_data = get_max_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
     if last_set_data:
@@ -823,13 +855,12 @@ async def adjust_set_data(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     new_text += f"\nКакой вес и количество повторений сейчас?"
 
-    new_reply_markup = get_set_logging_keyboard(new_weight, new_reps)
+    new_reply_markup = get_set_logging_keyboard(new_weight, new_reps, logged_sets, current_exercise['planned_sets'], workout_state['current_set_number'])
     
     try:
         await query.edit_message_text(new_text, reply_markup=new_reply_markup, parse_mode="HTML")
     except BadRequest as e:
-        if "Message is not modified" not in str(e):
-            raise
+        if "Message is not modified" not in str(e): raise
     
     return LOG_SET_WEIGHT
 
@@ -838,16 +869,122 @@ async def log_set_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     
     workout_state = context.user_data['active_workout']
-    add_logged_set(
+    # ИЗМЕНЕНО: Сохраняем ID добавленного сета
+    logged_set_id = add_logged_set(
         logged_workout_id=workout_state['logged_workout_id'],
         exercise_id=workout_state['current_exercise_data']['exercise_id'],
         set_number=workout_state['current_set_number'],
         weight=workout_state['current_weight'],
         reps_performed=workout_state['current_reps']
     )
+    workout_state['last_logged_set_id'] = logged_set_id
     
     workout_state['current_set_number'] += 1
     return await next_set_or_exercise(update, context)
+
+# --- НОВЫЕ ХЭНДЛЕРЫ для редактирования выполненного сета ---
+
+async def start_edit_logged_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    logged_set_id = int(query.data.split(":")[1])
+    
+    logged_set = get_logged_set_by_id(logged_set_id)
+    if not logged_set:
+        await query.answer("Ошибка: не удалось найти этот подход.", show_alert=True)
+        return LOG_SET_WEIGHT
+
+    # Сохраняем данные для редактирования
+    context.user_data['editing_set'] = {
+        'id': logged_set_id,
+        'weight': logged_set['weight'],
+        'reps': logged_set['reps_performed'],
+        'set_number': logged_set['set_number']
+    }
+
+    text = f"✏️ <b>Редактирование подхода №{logged_set['set_number']}</b>\n\n" \
+           f"Измените вес и/или повторения:"
+    
+    keyboard = get_editing_set_keyboard(logged_set['weight'], logged_set['reps_performed'])
+    
+    await query.answer()
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    return ADJUST_EDITING_SET
+
+def get_editing_set_keyboard(weight: float, reps: int) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для экрана редактирования сета."""
+    formatted_weight = f"{weight:.1f}".rstrip('0').rstrip('.') or "0"
+    keyboard = [
+        [
+            InlineKeyboardButton("-10 кг", callback_data="adjust_edit_weight:-10"),
+            InlineKeyboardButton("+10 кг", callback_data="adjust_edit_weight:+10")
+        ],
+        [
+            InlineKeyboardButton("-2.5", callback_data="adjust_edit_weight:-2.5"),
+            InlineKeyboardButton(f"🦾 {formatted_weight} кг", callback_data="noop"),
+            InlineKeyboardButton("+2.5", callback_data="adjust_edit_weight:+2.5")
+        ],
+        [
+            InlineKeyboardButton("➖", callback_data="adjust_edit_reps:-1"),
+            InlineKeyboardButton(f"🔢 {reps} повт.", callback_data="noop"),
+            InlineKeyboardButton("➕", callback_data="adjust_edit_reps:+1")
+        ],
+        [
+            InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_set"),
+            InlineKeyboardButton("✅ Сохранить", callback_data="save_edited_set")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def adjust_editing_set_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    editing_set_state = context.user_data['editing_set']
+    
+    if query.data.startswith("adjust_edit_weight:"):
+        change = float(query.data.split(":")[1])
+        editing_set_state['weight'] = max(0.0, editing_set_state['weight'] + change)
+    elif query.data.startswith("adjust_edit_reps:"):
+        change = int(query.data.split(":")[1])
+        editing_set_state['reps'] = max(0, editing_set_state['reps'] + change)
+
+    text = f"✏️ <b>Редактирование подхода №{editing_set_state['set_number']}</b>\n\n" \
+           f"Измените вес и/или повторения:"
+    
+    keyboard = get_editing_set_keyboard(editing_set_state['weight'], editing_set_state['reps'])
+    
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except BadRequest as e:
+        if "Message is not modified" not in str(e): raise
+
+    return ADJUST_EDITING_SET
+
+async def save_edited_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer("✅ Сохранено")
+    
+    editing_set_state = context.user_data['editing_set']
+    update_logged_set(
+        logged_set_id=editing_set_state['id'],
+        weight=editing_set_state['weight'],
+        reps_performed=editing_set_state['reps']
+    )
+    
+    del context.user_data['editing_set']
+    
+    # Возвращаемся к основному экрану тренировки
+    return await next_set_or_exercise(update, context)
+
+async def cancel_edit_logged_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    if 'editing_set' in context.user_data:
+        del context.user_data['editing_set']
+    return await next_set_or_exercise(update, context)
+
+# --- КОНЕЦ НОВЫХ ХЭНДЛЕРОВ ---
 
 async def skip_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -869,8 +1006,10 @@ async def end_workout_session(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 def _clear_workout_session_data(context: ContextTypes.DEFAULT_TYPE):
-    if 'active_workout' in context.user_data:
-        del context.user_data['active_workout']
+    keys_to_clear = ['active_workout', 'editing_set']
+    for key in keys_to_clear:
+        if key in context.user_data:
+            del context.user_data[key]
 
 async def cancel_workout_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -879,7 +1018,7 @@ async def cancel_workout_session(update: Update, context: ContextTypes.DEFAULT_T
     _clear_workout_session_data(context)
     return ConversationHandler.END
 
-# --- Statistics Handlers ---
+# --- Statistics Handlers (без изменений) ---
 
 async def show_statistics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -963,12 +1102,11 @@ async def analyze_exercise_progress(update: Update, context: ContextTypes.DEFAUL
     await query.answer("Анализирую, один момент...")
 
     exercise_id = int(query.data.split(":")[1])
-    user_id = query.from_user.id # user_id is needed for get_exercise_progression
+    user_id = query.from_user.id
 
     exercise = get_exercise_by_id(exercise_id)
     progression = get_exercise_progression(user_id, exercise_id)
 
-    # Группируем и находим лучшие подходы, как в show_exercise_progress
     grouped_by_date = groupby(progression, key=lambda x: datetime.fromisoformat(x['workout_date']).date())
     best_sets_per_day = []
     for date, sets in grouped_by_date:
@@ -977,7 +1115,7 @@ async def analyze_exercise_progress(update: Update, context: ContextTypes.DEFAUL
         best_set['one_rep_max'] = best_set['weight'] * (1 + best_set['reps_performed'] / 30)
         best_sets_per_day.append(best_set)
     
-    last_sessions = sorted(best_sets_per_day, key=itemgetter('date'), reverse=True)[:10] # Берем больше данных для ИИ
+    last_sessions = sorted(best_sets_per_day, key=itemgetter('date'), reverse=True)[:10]
     last_sessions.reverse()
 
     prompt_lines = [f"Анализ прогресса в упражнении: {exercise['name']}\n"]
@@ -992,11 +1130,10 @@ async def analyze_exercise_progress(update: Update, context: ContextTypes.DEFAUL
     await process_llm(update, context, prompt, mode="chat", system_prompt_override=SYSTEM_PROMPT_TRAINER)
 
 
-# --- ConversationHandler for adding a workout ---
+# --- ConversationHandlers ---
+
 add_workout_conversation_handler = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(start_add_workout, pattern='^workouts_add$')
-    ],
+    entry_points=[CallbackQueryHandler(start_add_workout, pattern='^workouts_add$')],
     states={
         ADD_WORKOUT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_workout_name)],
         ADD_EXERCISE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_name)],
@@ -1009,12 +1146,9 @@ add_workout_conversation_handler = ConversationHandler(
         CallbackQueryHandler(cancel_conversation, pattern='^cancel_add_workout$'),
         CommandHandler('cancel', cancel_conversation)
     ],
-    map_to_parent={
-        ConversationHandler.END: 0
-    }
+    map_to_parent={ConversationHandler.END: 0}
 )
 
-# --- ConversationHandler for editing a workout ---
 edit_workout_conversation_handler = ConversationHandler(
     entry_points=[
         CallbackQueryHandler(lambda u, c: start_edit_workout_name(u, c, int(u.callback_query.data.split(":")[1])), pattern='^edit_workout_name:'),
@@ -1039,12 +1173,10 @@ edit_workout_conversation_handler = ConversationHandler(
         CallbackQueryHandler(cancel_conversation, pattern='^cancel_edit_workout$'),
         CommandHandler('cancel', cancel_conversation)
     ],
-    map_to_parent={
-        ConversationHandler.END: 0
-    }
+    map_to_parent={ConversationHandler.END: 0}
 )
 
-# --- ConversationHandler for running a workout ---
+# ИЗМЕНЕНО: Добавляем новые обработчики в ConversationHandler для тренировки
 run_workout_conversation_handler = ConversationHandler(
     entry_points=[
         CallbackQueryHandler(lambda u, c: start_workout_session(u, c, int(u.callback_query.data.split(":")[1])), pattern='^start_workout:')
@@ -1055,8 +1187,16 @@ run_workout_conversation_handler = ConversationHandler(
             CallbackQueryHandler(log_set_confirm, pattern='^log_set_confirm$'),
             CallbackQueryHandler(skip_set, pattern='^skip_set$'),
             CallbackQueryHandler(cancel_workout_session, pattern='^cancel_workout_session$'),
+            # НОВЫЙ обработчик для входа в режим редактирования
+            CallbackQueryHandler(start_edit_logged_set, pattern='^edit_set:'),
         ],
         NEXT_SET_OR_EXERCISE: [CallbackQueryHandler(next_set_or_exercise)],
+        # НОВЫЕ состояния для диалога редактирования
+        ADJUST_EDITING_SET: [
+            CallbackQueryHandler(adjust_editing_set_data, pattern='^adjust_edit_(weight|reps):'),
+            CallbackQueryHandler(save_edited_set, pattern='^save_edited_set$'),
+            CallbackQueryHandler(cancel_edit_logged_set, pattern='^cancel_edit_set$'),
+        ]
     },
     fallbacks=[
         CallbackQueryHandler(cancel_workout_session, pattern='^cancel_workout_session$'),
@@ -1067,11 +1207,15 @@ run_workout_conversation_handler = ConversationHandler(
     }
 )
 
-
+# ИЗМЕНЕНО: Добавляем обработку `noop` callback
 async def handle_workouts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     query = update.callback_query
     data = query.data
-    user_id = query.from_user.id
+    
+    # Список callback'ов, которые не требуют ответа
+    if data == "noop":
+        await query.answer()
+        return True
 
     if not (data.startswith("workouts_") or data == "main_menu" or
             data.startswith("view_workout:") or

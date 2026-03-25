@@ -206,12 +206,42 @@ def end_logged_workout(logged_workout_id: int):
 
 def add_logged_set(
     logged_workout_id: int, exercise_id: int | None, set_number: int, weight: float, reps_performed: int
-):
-    """Добавляет запись о выполненном подходе."""
+) -> int:
+    """Добавляет запись о выполненном подходе и возвращает его ID."""
     with get_db_connection() as conn:
-        conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             "INSERT INTO logged_sets (logged_workout_id, exercise_id, set_number, weight, reps_performed) VALUES (?, ?, ?, ?, ?)",
             (logged_workout_id, exercise_id, set_number, weight, reps_performed)
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+def get_logged_set_by_id(logged_set_id: int) -> dict | None:
+    """Возвращает данные конкретного выполненного подхода по его ID."""
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            "SELECT logged_set_id, logged_workout_id, exercise_id, set_number, weight, reps_performed FROM logged_sets WHERE logged_set_id = ?",
+            (logged_set_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+def get_logged_sets_for_exercise(logged_workout_id: int, exercise_id: int) -> list[dict]:
+    """Возвращает все выполненные подходы для упражнения в рамках текущей тренировки."""
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            "SELECT logged_set_id, set_number, weight, reps_performed FROM logged_sets WHERE logged_workout_id = ? AND exercise_id = ? ORDER BY set_number",
+            (logged_workout_id, exercise_id)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+def update_logged_set(logged_set_id: int, weight: float, reps_performed: int):
+    """Обновляет вес и повторения для конкретного выполненного подхода."""
+    with get_db_connection() as conn:
+        conn.execute(
+            "UPDATE logged_sets SET weight = ?, reps_performed = ? WHERE logged_set_id = ?",
+            (weight, reps_performed, logged_set_id)
         )
         conn.commit()
 
