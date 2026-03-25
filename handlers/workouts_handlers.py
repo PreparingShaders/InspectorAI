@@ -646,7 +646,7 @@ async def finish_edit_exercises(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def start_workout_session(update: Update, context: ContextTypes.DEFAULT_TYPE, workout_id: int) -> int:
     query = update.callback_query
-    await query.answer() # <-- Добавлено
+    await query.answer()
     
     user_id = update.effective_user.id
     workout = get_workout_template_by_id(workout_id, user_id)
@@ -669,7 +669,9 @@ async def start_workout_session(update: Update, context: ContextTypes.DEFAULT_TY
         'current_set_number': 1,
         'current_exercise_data': None,
         'current_weight': 0.0,
-        'current_reps': 0
+        'current_reps': 0,
+        'max_weight_for_exercise': 0.0,
+        'last_calculated_set': 0 # Отслеживаем, для какого сета уже была логика
     }
     
     await query.edit_message_text(f"Начинаем тренировку '<b>{html.escape(workout['name'])}</b>'!", parse_mode="HTML")
@@ -691,11 +693,22 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     current_exercise = exercises[current_exercise_index]
-    workout_state['current_exercise_data'] = current_exercise
+    
+    is_new_exercise_in_session = False
+    previous_exercise_data = workout_state.get('current_exercise_data')
+    if not previous_exercise_data or previous_exercise_data.get('exercise_id') != current_exercise['exercise_id']:
+        is_new_exercise_in_session = True
+
+    if is_new_exercise_in_session:
+        workout_state['current_exercise_data'] = current_exercise
+        workout_state['current_set_number'] = 1
+        current_set_number = 1
+        max_set_data = get_max_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
+        workout_state['max_weight_for_exercise'] = max_set_data['weight'] if max_set_data else 0.0
+        workout_state['last_calculated_set'] = 0
 
     if current_set_number > current_exercise['planned_sets']:
         workout_state['current_exercise_index'] += 1
-        workout_state['current_set_number'] = 1
         return await next_set_or_exercise(update, context)
 
     workout_progress_summary = ["<b>План тренировки:</b>"]
@@ -715,27 +728,35 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
                f"<b>{html.escape(current_exercise['name'])}</b>\n\n" \
                f"<i>Подход {current_set_number} из {current_exercise['planned_sets']}</i>\n\n"
 
-    last_set_data = get_max_set_data_for_exercise(update.effective_user.id, current_exercise['exercise_id'])
-    
-    if 'current_weight' not in workout_state or 'current_reps' not in workout_state:
-        if last_set_data:
-            suggested_weight = last_set_data['weight']
-        else:
-            suggested_weight = 0.0
+    # Запускаем логику предложения веса и повторений только если мы перешли на новый сет
+    if workout_state.get('last_calculated_set') != current_set_number:
+        workout_state['last_calculated_set'] = current_set_number
+        max_weight = workout_state['max_weight_for_exercise']
         
-        if isinstance(current_exercise['planned_reps'], str) and '-' in current_exercise['planned_reps']:
-            try:
-                suggested_reps = int(current_exercise['planned_reps'].split('-')[0])
-            except ValueError: suggested_reps = 0
+        # Повторения из плана
+        planned_reps_str = str(current_exercise.get('planned_reps', '8'))
+        if '-' in planned_reps_str:
+            try: suggested_reps = int(planned_reps_str.split('-')[0].strip())
+            except (ValueError, IndexError): suggested_reps = 8
         else:
-            try: suggested_reps = int(current_exercise['planned_reps'])
-            except (ValueError, TypeError): suggested_reps = 0
-        
-        workout_state['current_weight'] = suggested_weight
-        workout_state['current_reps'] = suggested_reps
+            try: suggested_reps = int(planned_reps_str.strip())
+            except (ValueError, TypeError): suggested_reps = 8
 
-    if last_set_data:
-        new_text += f"<i>Ваш максимум: {last_set_data['weight']} кг на {last_set_data['reps_performed']} повторений.</i>\n"
+        if current_set_number == 1:
+            suggested_weight = max_weight * 0.8 if max_weight > 0 else 0.0
+            workout_state['current_weight'] = suggested_weight
+            workout_state['current_reps'] = suggested_reps
+        elif current_set_number == 2:
+            suggested_weight = max_weight
+            workout_state['current_weight'] = suggested_weight
+            workout_state['current_reps'] = suggested_reps
+        else:
+            # Для 3-го и далее сетов, повторения сбрасываются на плановые, а вес остается от предыдущего сета
+            workout_state['current_reps'] = suggested_reps
+
+
+    if workout_state['max_weight_for_exercise'] > 0:
+        new_text += f"<i>Ваш максимум: {workout_state['max_weight_for_exercise']} кг.</i>\n"
     
     new_text += f"\nКакой вес и количество повторений сейчас?"
 
@@ -927,16 +948,24 @@ async def log_set_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     
     workout_state = context.user_data['active_workout']
-    logged_set_id = add_logged_set(
+    
+    logged_weight = workout_state['current_weight']
+    logged_reps = workout_state['current_reps']
+    
+    add_logged_set(
         logged_workout_id=workout_state['logged_workout_id'],
         exercise_id=workout_state['current_exercise_data']['exercise_id'],
         set_number=workout_state['current_set_number'],
-        weight=workout_state['current_weight'],
-        reps_performed=workout_state['current_reps']
+        weight=logged_weight,
+        reps_performed=logged_reps
     )
-    workout_state['last_logged_set_id'] = logged_set_id
     
     workout_state['current_set_number'] += 1
+    
+    # Переносим на следующий подход вес и повторения
+    workout_state['current_weight'] = logged_weight
+    workout_state['current_reps'] = logged_reps
+    
     return await next_set_or_exercise(update, context)
 
 async def start_edit_logged_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
