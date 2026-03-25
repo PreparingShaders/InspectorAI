@@ -723,17 +723,33 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
 
     logged_sets = get_logged_sets_for_exercise(workout_state['logged_workout_id'], current_exercise['exercise_id'])
 
+    # --- Формирование текста ---
     new_text = f"{workout_progress_summary_text}\n" \
                f"------\n" \
-               f"<b>{html.escape(current_exercise['name'])}</b>\n\n" \
-               f"<i>Подход {current_set_number} из {current_exercise['planned_sets']}</i>\n\n"
+               f"<b>{html.escape(current_exercise['name'])}</b>\n\n"
 
-    # Запускаем логику предложения веса и повторений только если мы перешли на новый сет
+    # Отображение выполненных подходов
+    completed_sets_summary = []
+    if logged_sets:
+        for logged_set in sorted(logged_sets, key=itemgetter('set_number')):
+            formatted_weight = f"{logged_set['weight']:.1f}".rstrip('0').rstrip('.') or "0"
+            completed_sets_summary.append(
+                f"✅ {logged_set['set_number']} подход: <b>{formatted_weight} кг</b> на <b>{logged_set['reps_performed']}</b> повт."
+            )
+    if completed_sets_summary:
+        new_text += "\n".join(completed_sets_summary) + "\n\n"
+
+    # Строка для текущего подхода
+    new_text += f"<i>➡️ Подход {current_set_number} из {current_exercise['planned_sets']}</i>\n\n"
+
+
+    # --- Логика предложения веса и повторений ---
+    # Запускаем логику только если мы перешли на новый сет (а не просто перерисовываем экран)
     if workout_state.get('last_calculated_set') != current_set_number:
         workout_state['last_calculated_set'] = current_set_number
         max_weight = workout_state['max_weight_for_exercise']
         
-        # Повторения из плана
+        # Повторения всегда берем из плана как базовое значение
         planned_reps_str = str(current_exercise.get('planned_reps', '8'))
         if '-' in planned_reps_str:
             try: suggested_reps = int(planned_reps_str.split('-')[0].strip())
@@ -750,10 +766,10 @@ async def next_set_or_exercise(update: Update, context: ContextTypes.DEFAULT_TYP
             suggested_weight = max_weight
             workout_state['current_weight'] = suggested_weight
             workout_state['current_reps'] = suggested_reps
-        else:
-            # Для 3-го и далее сетов, повторения сбрасываются на плановые, а вес остается от предыдущего сета
+        else: # Для 3-го и далее сетов
+            # Вес берется из предыдущего сета (уже в workout_state)
+            # А повторения сбрасываются на плановые
             workout_state['current_reps'] = suggested_reps
-
 
     if workout_state['max_weight_for_exercise'] > 0:
         new_text += f"<i>Ваш максимум: {workout_state['max_weight_for_exercise']} кг.</i>\n"
