@@ -195,23 +195,79 @@ def start_logged_workout(user_id: int, workout_id: int | None) -> int:
         conn.commit()
         return cursor.lastrowid
 
-def end_logged_workout(logged_workout_id: int):
+def end_logged_workout(logged_workout_id: int, end_time: datetime):
     """Завершает запись выполненной тренировки, устанавливая end_time."""
     with get_db_connection() as conn:
         conn.execute(
-            "UPDATE logged_workouts SET end_time = CURRENT_TIMESTAMP WHERE logged_workout_id = ?",
-            (logged_workout_id,)
+            "UPDATE logged_workouts SET end_time = ? WHERE logged_workout_id = ?",
+            (end_time, logged_workout_id)
         )
         conn.commit()
 
 def add_logged_set(
     logged_workout_id: int, exercise_id: int | None, set_number: int, weight: float, reps_performed: int
-):
-    """Добавляет запись о выполненном подходе."""
+) -> int:
+    """Добавляет запись о выполненном подходе и возвращает его ID."""
     with get_db_connection() as conn:
-        conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             "INSERT INTO logged_sets (logged_workout_id, exercise_id, set_number, weight, reps_performed) VALUES (?, ?, ?, ?, ?)",
             (logged_workout_id, exercise_id, set_number, weight, reps_performed)
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+def get_logged_set_by_id(logged_set_id: int) -> dict | None:
+    """Возвращает данные конкретного выполненного подхода по его ID."""
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            "SELECT logged_set_id, logged_workout_id, exercise_id, set_number, weight, reps_performed FROM logged_sets WHERE logged_set_id = ?",
+            (logged_set_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+def get_logged_sets_for_exercise(logged_workout_id: int, exercise_id: int) -> list[dict]:
+    """Возвращает все выполненные подходы для упражнения в рамках текущей тренировки."""
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            "SELECT logged_set_id, set_number, weight, reps_performed FROM logged_sets WHERE logged_workout_id = ? AND exercise_id = ? ORDER BY set_number",
+            (logged_workout_id, exercise_id)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_all_logged_sets_for_workout(logged_workout_id: int) -> list[dict]:
+    """Возвращает все выполненные подходы для всей тренировки с названиями упражнений."""
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT
+                ls.logged_set_id,
+                ls.set_number,
+                ls.weight,
+                ls.reps_performed,
+                ls.exercise_id,
+                e.name as exercise_name,
+                e.order_in_workout
+            FROM
+                logged_sets ls
+            LEFT JOIN
+                exercises e ON ls.exercise_id = e.exercise_id
+            WHERE
+                ls.logged_workout_id = ?
+            ORDER BY
+                e.order_in_workout, ls.set_number
+            """,
+            (logged_workout_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+def update_logged_set(logged_set_id: int, weight: float, reps_performed: int):
+    """Обновляет вес и повторения для конкретного выполненного подхода."""
+    with get_db_connection() as conn:
+        conn.execute(
+            "UPDATE logged_sets SET weight = ?, reps_performed = ? WHERE logged_set_id = ?",
+            (weight, reps_performed, logged_set_id)
         )
         conn.commit()
 
