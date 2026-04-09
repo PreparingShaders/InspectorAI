@@ -37,6 +37,8 @@ from llm_service import update_model_mappings
 from utils import handle_voice_transcription, link_fixer_logic
 from nutrition import init_db as init_nutrition_db
 from workouts import init_db as init_workouts_db
+from telegram.ext import CommandHandler
+from handlers.common_handlers import hide_menu  # Путь зависит от того, куда ты положил функцию
 
 # Настройка логгирования
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -81,6 +83,7 @@ def main():
 
     # 2. Основные команды и кнопки
     app.add_handler(CommandHandler("start", start)) # Используем start напрямую
+    app.add_handler(CommandHandler("hide_menu", hide_menu))
     app.add_handler(MessageHandler(filters.Regex('^🥗 Нутрициолог$'), show_nutrition_menu))
     app.add_handler(MessageHandler(filters.Regex('^🏋️ Тренировки$'), show_workouts_menu))
     app.add_handler(MessageHandler(filters.Regex('^🤖 Сменить модель$'), show_model_selection))
