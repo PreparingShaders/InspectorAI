@@ -17,7 +17,17 @@ from handlers.state import (
 from handlers.finance_handlers import handle_group_finance, handle_finance_callback
 from handlers.nutrition_handlers import handle_nutrition_photo, confirm_meal_callback, handle_nutrition_callback
 from handlers.workouts_handlers import handle_workouts_callback # Новый импорт
+from telegram import Update, ReplyKeyboardRemove
+from telegram.ext import ContextTypes
 
+
+async def hide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        await update.message.reply_text(
+            "⌨️ Меню скрыто. Чтобы вернуть его, нажми /start",
+            reply_markup=ReplyKeyboardRemove(selective=True),
+            message_thread_id=update.message.message_thread_id
+        )
 
 async def show_model_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
