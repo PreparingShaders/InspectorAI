@@ -27,30 +27,30 @@ ALLOWED_USER_IDS = [
 
 # ─── Модели по умолчанию (Fallback) ───────────────────────
 DEFAULT_OPENROUTER_MODELS = [
-    "minimax/minimax-m2.5",  # Топ-1. Очень быстрая, логика на уровне GPT-4o. Идеальна для функций.
     "z-ai/glm-4.5-air:free",  # Отличная "адаптивная" модель, быстрая и человечная в ответах.
     "arcee-ai/trinity-mini:free",  # Легкая, шустрая, хороша для простых команд и фаст-чата.
     "openai/gpt-oss-20b:free",  # Сбалансированная база, неплохая логика, средняя скорость.
+    "openai/gpt-oss-120b:free"  # Очень умная (MoE), но для ТГ может быть слишком "задумчивой".
     "nvidia/nemotron-3-nano-30b-a3b:free",
     "arcee-ai/trinity-large-preview:free",  # Умнее mini, но требует больше времени на генерацию.
-    "openai/gpt-oss-120b:free"  # Очень умная (MoE), но для ТГ может быть слишком "задумчивой".
 ]
 
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    'gemini-2.5-pro',
+    "gemini-3-flash-preview",
     "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    'gemini-2.5-pro',
     'gemini-3.1-flash-lite-preview',
-    "gemini-3-flash-preview"
+    'gemma-4-31b-it',
+    'gemma-3-27b-it'
 ]
 
 NUTRITION_MODELS = [
     # 2. СПЕЦИАЛИЗИРОВАННЫЕ VISION-МОДЕЛИ (Твоя потеряшка тут!)
     'gemini-3.1-flash-lite-preview',
+    'gemini-3-flash-preview',
     'gemini-2.5-flash-lite',
     'gemini-2.5-flash',  # Высокая квота и скорость
-    'gemini-2.5-pro',
     'openai/gpt-5-nano',
     'google/gemini-2.5-flash-lite',
     'qwen/qwen3-vl-235b-a22b-thinking',
