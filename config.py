@@ -27,12 +27,13 @@ ALLOWED_USER_IDS = [
 
 # ─── Модели по умолчанию (Fallback) ───────────────────────
 DEFAULT_OPENROUTER_MODELS = [
-    "z-ai/glm-4.5-air:free",  # Отличная "адаптивная" модель, быстрая и человечная в ответах.
-    "arcee-ai/trinity-mini:free",  # Легкая, шустрая, хороша для простых команд и фаст-чата.
     "openai/gpt-oss-20b:free",  # Сбалансированная база, неплохая логика, средняя скорость.
-    "openai/gpt-oss-120b:free"  # Очень умная (MoE), но для ТГ может быть слишком "задумчивой".
+    "nvidia/nemotron-nano-9b-v2:free",  # Легкая, шустрая, хороша для простых команд и фаст-чата.
+    "z-ai/glm-4.5-air:free",  # Отличная "адаптивная" модель, быстрая и человечная в ответах.
     "nvidia/nemotron-3-nano-30b-a3b:free",
-    "arcee-ai/trinity-large-preview:free",  # Умнее mini, но требует больше времени на генерацию.
+    'nvidia/nemotron-3-super-120b-a12b:free',
+    "openai/gpt-oss-120b:free"  # Очень умная (MoE), но для ТГ может быть слишком "задумчивой".
+    "tencent/hy3-preview:free",  # Умнее mini, но требует больше времени на генерацию.
 ]
 
 GEMINI_MODELS = [
