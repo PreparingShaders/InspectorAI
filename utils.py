@@ -89,7 +89,7 @@ async def link_fixer_logic(update, context):
     if not text: return
 
     replacements = {
-        r"instagram\.com/": "kksave.com/",
+        r"instagram\.com/": "dlinstagram.com/",
         r"(vm|vt|www)\.tiktok\.com/": "vxtiktok.com/",
         r"(twitter|x)\.com/": "fxtwitter.com/",
     }
